@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=68", "setuptools-scm>=8"]
-build-backend = "setuptools.backends.legacy:build"
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "openjiuwen-sdk"
@@ -27,9 +27,8 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-# Namespace package: find openjiuwen.sdk but not openjiuwen itself
+# Namespace package: auto-discover openjiuwen.sdk and openjiuwen.sdk._internal
 where = ["."]
-include = ["openjiuwen.sdk*"]
 namespaces = true
 
 [tool.ruff]

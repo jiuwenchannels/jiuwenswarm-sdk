@@ -21,11 +21,42 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
+# Import session_bridge as a module so patches applied to its attributes
+# are visible when we call _sb.make_internal_session() etc. at runtime.
+from openjiuwen.sdk._internal import session_bridge as _sb
+
 if TYPE_CHECKING:
     from openjiuwen.sdk.config import ModelConfig
     from openjiuwen.sdk.tools import SdkTool
 
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Module-level patchable harness callables
+# (defined here so tests can monkeypatch them without local-import scoping)
+# ---------------------------------------------------------------------------
+
+
+def create_deep_agent(config: Any) -> Any:
+    """Thin wrapper around openjiuwen.harness.factory.create_deep_agent (patchable)."""
+    from openjiuwen.harness.factory import create_deep_agent as _fn
+
+    return _fn(config)
+
+
+def make_agent_card(agent_id: str, name: str) -> Any:
+    """Thin wrapper around AgentCard construction (patchable)."""
+    from openjiuwen.core.single_agent.schema.agent_card import AgentCard
+
+    return AgentCard(id=agent_id, name=name)
+
+
+def make_deep_agent_config(**kwargs: Any) -> Any:
+    """Thin wrapper around DeepAgentConfig construction (patchable)."""
+    from openjiuwen.harness.schema.config import DeepAgentConfig
+
+    return DeepAgentConfig(**kwargs)
+
 
 # ---------------------------------------------------------------------------
 # Runtime availability guard
@@ -191,16 +222,12 @@ class AgentHandle:
             return self._deep_agent
 
         _require_runtime()
-        from openjiuwen.core.single_agent.schema.agent_card import AgentCard
-        from openjiuwen.harness.factory import create_deep_agent
-        from openjiuwen.harness.schema.config import DeepAgentConfig
-
         model = _build_model(self.model_cfg)
-        card = AgentCard(id=self._agent_id, name=self.name)
+        card = make_agent_card(self._agent_id, self.name)
 
         runtime_tools = _sdk_tools_to_runtime(self.tools) if self.tools else None
 
-        config = DeepAgentConfig(
+        config = make_deep_agent_config(
             model=model,
             card=card,
             tools=runtime_tools,
@@ -236,27 +263,19 @@ class AgentHandle:
     # ------------------------------------------------------------------
 
     async def run(self, prompt: str, session_id: str | None = None) -> "AgentRunResult":
-        from openjiuwen.core.session import create_agent_session
-        from openjiuwen.sdk._internal.session_bridge import (
-            append_message,
-            create_session as _create_sess,
-            get_session,
-            make_internal_session,
-        )
-
         agent = await self._ensure_agent()
 
         # Resolve or create the SDK session record.
         if session_id is not None:
-            record = get_session(session_id)
+            record = _sb.get_session(session_id)
             if record is None:
                 from openjiuwen.sdk.errors import SessionError
 
                 raise SessionError(f"Session '{session_id}' not found.")
         else:
-            record = _create_sess(title=f"{self.name} session", mode="default")
+            record = _sb.create_session(title=f"{self.name} session", mode="default")
 
-        internal_sess = make_internal_session(record)
+        internal_sess = _sb.make_internal_session(record)
         await internal_sess.pre_run()
 
         try:
@@ -272,8 +291,8 @@ class AgentHandle:
                 pass
 
         text = _extract_text(result)
-        append_message(record.id, role="user", text=prompt)
-        append_message(record.id, role="assistant", text=text)
+        _sb.append_message(record.id, role="user", text=prompt)
+        _sb.append_message(record.id, role="assistant", text=text)
         return AgentRunResult(text=text, session_id=record.id)
 
     # ------------------------------------------------------------------
@@ -281,25 +300,18 @@ class AgentHandle:
     # ------------------------------------------------------------------
 
     async def stream(self, prompt: str, session_id: str | None = None) -> AsyncIterator[str]:
-        from openjiuwen.sdk._internal.session_bridge import (
-            append_message,
-            create_session as _create_sess,
-            get_session,
-            make_internal_session,
-        )
-
         agent = await self._ensure_agent()
 
         if session_id is not None:
-            record = get_session(session_id)
+            record = _sb.get_session(session_id)
             if record is None:
                 from openjiuwen.sdk.errors import SessionError
 
                 raise SessionError(f"Session '{session_id}' not found.")
         else:
-            record = _create_sess(title=f"{self.name} session", mode="default")
+            record = _sb.create_session(title=f"{self.name} session", mode="default")
 
-        internal_sess = make_internal_session(record)
+        internal_sess = _sb.make_internal_session(record)
         await internal_sess.pre_run()
 
         collected: list[str] = []
@@ -320,8 +332,8 @@ class AgentHandle:
                 pass
 
         text = "".join(collected)
-        append_message(record.id, role="user", text=prompt)
-        append_message(record.id, role="assistant", text=text)
+        _sb.append_message(record.id, role="user", text=prompt)
+        _sb.append_message(record.id, role="assistant", text=text)
 
     # ------------------------------------------------------------------
     # Checkpoint
