@@ -26,6 +26,7 @@ from openjiuwen.sdk.events import EventEmitter
 
 if TYPE_CHECKING:
     from openjiuwen.sdk.config import ModelConfig, RemoteConfig
+    from openjiuwen.sdk.hooks import Hooks
     from openjiuwen.sdk.tools import SdkTool
 
 
@@ -94,6 +95,7 @@ class Agent(EventEmitter):
         context_engine: Any = None,
         rl_optimizer: Any = None,
         system_prompt: Optional[str] = None,
+        hooks: Optional["Hooks"] = None,
     ) -> "Agent":
         """Create an in-process agent.
 
@@ -120,6 +122,8 @@ class Agent(EventEmitter):
                                for context compression.
             rl_optimizer:      Online/offline RL optimizer for trajectory collection.
             system_prompt:     Override the default system prompt.
+            hooks:             :class:`~openjiuwen.sdk.hooks.Hooks` instance
+                               with pre-registered lifecycle callbacks.
 
         Returns:
             An :class:`Agent` ready for ``run()`` / ``stream()`` calls.
@@ -148,7 +152,10 @@ class Agent(EventEmitter):
         # Eagerly initialise the DeepAgent so errors surface here, not at
         # the first run() call.
         await handle._ensure_agent()
-        return cls(handle, _mode="inprocess")
+        agent = cls(handle, _mode="inprocess")
+        if hooks is not None:
+            hooks.wire(agent)
+        return agent
 
     @classmethod
     async def connect(

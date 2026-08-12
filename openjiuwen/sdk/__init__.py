@@ -83,6 +83,32 @@ from openjiuwen.sdk.tools import SdkTool, ToolParam, tool
 from openjiuwen.sdk.events import EventEmitter
 
 # ---------------------------------------------------------------------------
+# Hooks
+# ---------------------------------------------------------------------------
+
+from openjiuwen.sdk.hooks import Hooks
+
+# ---------------------------------------------------------------------------
+# Workflow
+# ---------------------------------------------------------------------------
+
+from openjiuwen.sdk.workflow import (
+    ConditionNode,
+    LLMNode,
+    ToolNode,
+    Workflow,
+    WorkflowError,
+    WorkflowNode,
+    WorkflowResult,
+)
+
+# ---------------------------------------------------------------------------
+# A2A (agent-to-agent)
+# ---------------------------------------------------------------------------
+
+from openjiuwen.sdk.a2a import A2AError, A2AResult, RemoteAgent
+
+# ---------------------------------------------------------------------------
 # Public surface
 # ---------------------------------------------------------------------------
 
@@ -107,6 +133,20 @@ __all__ = [
     "ToolParam",
     # Events
     "EventEmitter",
+    # Hooks
+    "Hooks",
+    # Workflow
+    "Workflow",
+    "WorkflowResult",
+    "WorkflowNode",
+    "LLMNode",
+    "ToolNode",
+    "ConditionNode",
+    "WorkflowError",
+    # A2A
+    "RemoteAgent",
+    "A2AResult",
+    "A2AError",
     # Errors
     "SdkError",
     "RuntimeNotAvailableError",
