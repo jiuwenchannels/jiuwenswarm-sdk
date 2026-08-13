@@ -1069,26 +1069,144 @@ interface ToolCallEnvelope {
 Base URL: `http://localhost:19001`
 Auth: `Authorization: Bearer <token>` (when auth is enabled on the server).
 
+### Endpoints
+
 | Method | Path | Request body | Response |
 |--------|------|-------------|----------|
 | GET | `/v1/health` | — | `{status, version, protocol_version}` |
 | GET | `/v1/sessions` | — | `{sessions: SessionInfo[]}` |
-| POST | `/v1/sessions` | `{title, mode}` | `SessionInfo` |
-| GET | `/v1/sessions/{id}` | — | `SessionInfo + {messages[]}` |
-| DELETE | `/v1/sessions/{id}` | — | `204` |
-| POST | `/v1/sessions/{id}/chat` | `{message}` | `{response}` |
-| POST | `/v1/sessions/{id}/chat/stream` | `{message}` | SSE |
+| POST | `/v1/sessions` | `{title, agent_id, mode?}` | `{session: SessionInfo}` |
+| GET | `/v1/sessions/{id}` | — | `{session: SessionInfo}` |
+| DELETE | `/v1/sessions/{id}` | — | `{deleted: true, id}` |
+| POST | `/v1/sessions/{id}/chat` | `{message, session_id?}` | `{response, session_id, metadata}` |
+| POST | `/v1/sessions/{id}/chat/stream` | `{message, session_id?}` | SSE tokens |
 | GET | `/v1/agents` | — | `{agents: AgentInfo[]}` |
-| GET | `/v1/agents/{id}` | — | `AgentInfo` |
-| POST | `/v1/agents/{id}/run` | `{prompt}` | `{response}` |
-| POST | `/v1/agents/{id}/stream` | `{prompt}` | SSE |
+| GET | `/v1/agents/{id}` | — | `{agent: AgentInfo}` |
+| POST | `/v1/agents/{id}/run` | `{prompt, session_id?}` | `{response, session_id, metadata}` |
+| POST | `/v1/agents/{id}/stream` | `{prompt, session_id?}` | SSE tokens |
 | GET | `/v1/tools` | — | `{tools: ToolInfo[]}` |
-| POST | `/v1/knowledge` | `{name, embedding_model, vector_store}` | `{id}` |
-| POST | `/v1/knowledge/{name}/documents` | `{documents[]}` | `{ids[]}` |
-| POST | `/v1/knowledge/{name}/query` | `{query, top_k}` | `{results[]}` |
-| POST | `/v1/eval/batch` | `{agent_id, metrics[], cases[]}` | `{results[], summary}` |
-| POST | `/v1/agents/{id}/checkpoint` | `{session_id}` | `{checkpoint_id}` |
-| GET | `/v1/checkpoints` | — | `{checkpoints[]}` |
-| POST | `/v1/checkpoints/{id}/restore` | — | `{session_id, restored_from, message_count}` |
+| POST | `/v1/knowledge` | `{name, type?}` | `{knowledge_base: {name, type, document_count}}` |
+| POST | `/v1/knowledge/{name}/documents` | `{documents: [{content, metadata?}]}` | `{added, knowledge_base}` |
+| POST | `/v1/knowledge/{name}/query` | `{query, top_k?}` | `{results: [{content, score, metadata}]}` |
+| POST | `/v1/eval/batch` | `{metric, cases: [{input, expected, prediction}]}` | `{results[], aggregate}` |
+| POST | `/v1/agents/{id}/checkpoint` | — | `{checkpoint: {id, agent_id, created_at}}` |
+| GET | `/v1/checkpoints` | — | `{checkpoints: CheckpointInfo[]}` |
+| POST | `/v1/checkpoints/{id}/restore` | — | `{restored, agent_id, checkpoint_id}` |
 
 Interactive docs: `http://localhost:19001/docs`
+
+### SSE stream format
+
+Streaming endpoints (`/chat/stream`, `/agents/{id}/stream`) emit
+[Server-Sent Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events):
+
+```
+data: Hello
+
+data:  world
+
+data: [DONE]
+
+```
+
+Each `data:` line is one token. The stream ends with `data: [DONE]\n\n`.
+
+### Error responses
+
+All errors use the standard FastAPI shape:
+
+```json
+{"detail": "Human-readable error message"}
+```
+
+Common codes: `400` bad request, `401` unauthorized, `404` not found,
+`409` conflict, `500` internal error.
+
+---
+
+## WebSocket Gateway
+
+Endpoint: `ws://localhost:19000/v1/ws`
+
+All messages are JSON **envelopes** — objects with a `"type"` discriminator.
+
+### Inbound envelopes (client → server)
+
+#### `connect`
+
+Authenticate and identify the client. Required when `JIUWENSWARM_GATEWAY_TOKEN`
+is set on the server (browser WS API cannot send `Authorization` headers).
+
+```json
+{"type": "connect", "client_type": "browser", "token": "<bearer-token>"}
+```
+
+#### `sessions`
+
+Request the list of active sessions.
+
+```json
+{"type": "sessions"}
+```
+
+#### `create_session`
+
+Create a new session and make it active for this connection.
+
+```json
+{
+  "type": "create_session",
+  "agent_id": "researcher",
+  "title": "My session",
+  "mode": "default"
+}
+```
+
+#### `chat`
+
+Send a message and receive a streamed reply. `session_id` is optional when a
+session was already activated via `create_session`.
+
+```json
+{"type": "chat", "message": "Explain transformer attention.", "session_id": "sess_abc"}
+```
+
+### Outbound envelopes (server → client)
+
+| `"type"` | When | Key fields |
+|----------|------|-----------|
+| `ack` | After `connect` or `chat` received | `protocol_version`, `client_type`, `session_id` |
+| `sessions` | Reply to `sessions` request | `sessions: SessionInfo[]` |
+| `session_created` | Reply to `create_session` | `session: SessionInfo` |
+| `token` | During streaming | `text: string` |
+| `done` | End of stream | `session_id` |
+| `error` | Any error | `message: string` |
+
+### WebSocket example (Python)
+
+```python
+import asyncio, json, websockets
+
+async def main():
+    async with websockets.connect("ws://localhost:19000/v1/ws") as ws:
+        await ws.send(json.dumps({"type": "connect", "client_type": "python"}))
+        print(await ws.recv())  # {"type": "ack", ...}
+
+        await ws.send(json.dumps({
+            "type": "create_session",
+            "agent_id": "researcher",
+            "title": "Demo",
+        }))
+        print(await ws.recv())  # {"type": "session_created", ...}
+
+        await ws.send(json.dumps({"type": "chat", "message": "Hello!"}))
+        async for raw in ws:
+            msg = json.loads(raw)
+            if msg["type"] == "token":
+                print(msg["text"], end="", flush=True)
+            elif msg["type"] in ("done", "error"):
+                print()
+                break
+
+asyncio.run(main())
+```

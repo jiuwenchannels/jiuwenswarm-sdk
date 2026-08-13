@@ -25,12 +25,16 @@ otel = [
 ]
 # Redis checkpoint backend (RedisCheckpointBackend)
 redis = ["redis>=5.0"]
+# HTTP REST + WebSocket gateway server
+gateway = ["fastapi>=0.110", "uvicorn[standard]>=0.29"]
 # All optional extras bundled
 all = [
     "openjiuwen>=1.0.0",
     "opentelemetry-sdk>=1.24",
     "opentelemetry-exporter-otlp-proto-grpc>=1.24",
     "redis>=5.0",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
 ]
 # Development tools
 dev = [
@@ -39,6 +43,8 @@ dev = [
     "ruff>=0.4",
     "pyright>=1.1",
     "httpx>=0.27",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
 ]
 
 [tool.setuptools.packages.find]

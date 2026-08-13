@@ -74,6 +74,7 @@ jiuwenswarm serve   # ws://localhost:19000  and  http://localhost:19001
 | `python/27_context_engine.py` | §27 | `ContextEngine` processors: budget, summary, compact |
 | `python/28_online_rl.py` | §28 | `OnlineRLOptimizer`, `OfflineRLOptimizer`, reward registry |
 | `python/29_mcp_server.py` | §29 | MCP server — subprocess and embedded `build_server()` modes |
+| `python/30_gateway_startup.py` | §30 | HTTP + WebSocket gateway — start server, REST chat, SSE stream, WS protocol |
 
 ---
 

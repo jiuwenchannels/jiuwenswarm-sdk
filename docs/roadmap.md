@@ -9,51 +9,6 @@ Features planned *beyond* v1.0.0 are collected at the bottom under
 
 ---
 
-## Phase 3 — HTTP REST + WebSocket Gateway
-
-### Auth middleware
-
-| Task | File | Done when |
-|---|---|---|
-| `BearerTokenMiddleware` | `openjiuwen/gateway/auth.py` | Requests without a valid `Authorization: Bearer <token>` return 401; `auth_token=None` disables auth (dev mode) |
-| Unit tests | `tests/unit_tests/gateway/test_auth.py` | valid token passes; invalid token → 401; disabled auth passes all |
-
-### REST routes
-
-| Task | File | Done when |
-|---|---|---|
-| `GET /v1/health` | `openjiuwen/gateway/rest/health.py` | Returns `{status: "ok", version: "...", protocol_version: "1"}` |
-| `/v1/sessions` CRUD | `openjiuwen/gateway/rest/sessions.py` | GET list, POST create, GET by id, DELETE — all tested with `httpx.AsyncClient` |
-| `POST /v1/sessions/{id}/chat` (blocking) | `openjiuwen/gateway/rest/sessions.py` | Returns full JSON response when agent completes |
-| `POST /v1/sessions/{id}/chat/stream` (SSE) | `openjiuwen/gateway/rest/sessions.py` | Returns `text/event-stream`; emits `event: token` per token; closes with `event: done` |
-| `GET /v1/agents`, `GET /v1/agents/{id}` | `openjiuwen/gateway/rest/agents.py` | List registered agents and fetch by id |
-| `POST /v1/agents/{id}/run` | `openjiuwen/gateway/rest/agents.py` | Blocking agent run |
-| `POST /v1/agents/{id}/stream` | `openjiuwen/gateway/rest/agents.py` | SSE agent stream |
-| `GET /v1/tools` | `openjiuwen/gateway/rest/tools.py` | Returns all registered tools with name, description, schema |
-| `POST /v1/knowledge`, `POST /v1/knowledge/{name}/documents`, `POST /v1/knowledge/{name}/query` | `openjiuwen/gateway/rest/knowledge.py` | Knowledge base CRUD and query |
-| `POST /v1/eval/batch` | `openjiuwen/gateway/rest/eval.py` | Batch evaluation endpoint |
-| `POST /v1/agents/{id}/checkpoint`, `GET /v1/checkpoints`, `POST /v1/checkpoints/{id}/restore` | `openjiuwen/gateway/rest/checkpoints.py` | Checkpoint save, list, restore |
-| Unit tests for all routes | `tests/unit_tests/gateway/` | Each route: success case + at least one 4xx error case |
-
-### WebSocket gateway
-
-| Task | File | Done when |
-|---|---|---|
-| `/v1/ws` envelope handler | `openjiuwen/gateway/ws/router.py` | Accepts WS connection; parses JSON envelopes; dispatches to runtime |
-| `"protocol_version": "1"` in `ack` | `openjiuwen/gateway/ws/dispatcher.py` | Every `ack` payload includes this field |
-| `client_type` forwarding | `openjiuwen/gateway/ws/dispatcher.py` | `connect` envelope `client_type` stored and forwarded to agent context |
-| `envelope.py` — parse and validate | `openjiuwen/gateway/ws/envelope.py` | `parseEnvelope(raw)` returns typed envelope dict or raises `ProtocolError` |
-
-### FastAPI app assembly
-
-| Task | File | Done when |
-|---|---|---|
-| `build_gateway_app(config)` | `openjiuwen/gateway/app.py` | Returns a FastAPI app with all routes + auth middleware mounted; accepts `GatewayConfig` |
-| `python -m openjiuwen.gateway` entrypoint | `openjiuwen/gateway/__main__.py` | `python -m openjiuwen.gateway --host 0.0.0.0 --port-rest 19001 --port-ws 19000` starts both servers |
-| OpenAPI at `/docs` | — | `curl http://localhost:19001/docs` returns Swagger UI HTML |
-
----
-
 ## Phase 4 — TypeScript SDK (`@jiuwenswarm/sdk`)
 
 ### Project setup
