@@ -1,0 +1,53 @@
+{
+  "name": "@jiuwenswarm/sdk",
+  "version": "1.0.0",
+  "description": "TypeScript / JavaScript SDK for JiuwenSwarm",
+  "main": "dist/index.cjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "require": "./dist/index.cjs",
+      "import": "./dist/index.mjs",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "docs": "typedoc --out docs src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "jiuwenswarm",
+    "agent",
+    "llm",
+    "ai",
+    "sdk"
+  ],
+  "license": "Proprietary",
+  "peerDependencies": {
+    "ws": ">=8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "ws": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/ws": "^8.5.10",
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0",
+    "typedoc": "^0.25.0",
+    "vitest": "^1.4.0"
+  },
+  "publishConfig": {
+    "access": "restricted"
+  }
+}

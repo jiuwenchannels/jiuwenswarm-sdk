@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openjiuwen-sdk"
-version = "0.1.0"
+version = "1.0.0"
 description = "Python SDK facade for the JiuwenSwarm agent runtime"
 readme = "README.md"
 license = { text = "Proprietary" }
@@ -17,13 +17,28 @@ dependencies = [
 
 [project.optional-dependencies]
 # Full in-process runtime (Agent.create mode)
-runtime = ["openjiuwen>=0.1.0"]
+runtime = ["openjiuwen>=1.0.0"]
+# OpenTelemetry tracing (OtelTracer)
+otel = [
+    "opentelemetry-sdk>=1.24",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.24",
+]
+# Redis checkpoint backend (RedisCheckpointBackend)
+redis = ["redis>=5.0"]
+# All optional extras bundled
+all = [
+    "openjiuwen>=1.0.0",
+    "opentelemetry-sdk>=1.24",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.24",
+    "redis>=5.0",
+]
 # Development tools
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "ruff>=0.4",
     "pyright>=1.1",
+    "httpx>=0.27",
 ]
 
 [tool.setuptools.packages.find]
@@ -45,3 +60,6 @@ typeCheckingMode = "standard"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "system: end-to-end tests that require a running local server (deselect with -m 'not system')",
+]
