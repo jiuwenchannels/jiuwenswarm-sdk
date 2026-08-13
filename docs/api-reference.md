@@ -409,23 +409,25 @@ class ToolGuard(TaskLoopEventHandler):
 ## Memory
 
 ```python
-class MemoryScope(enum.Enum):
+class MemoryScope(str, enum.Enum):
     USER    = "user"
+    AGENT   = "agent"
     SESSION = "session"
     GLOBAL  = "global"
 
 class Memory:
-    async def add(self, content: str, *, metadata: dict | None = None) -> str: ...
-    async def search(self, query: str, *, top_k: int = 5) -> list["MemoryResult"]: ...
-    async def delete(self, memory_id: str) -> None: ...
-    async def list(self) -> list["MemoryResult"]: ...
+    async def add(self, text: str, *, metadata: dict | None = None) -> str: ...
+    async def search(self, query: str, *, top_k: int = 5) -> list["MemoryRecord"]: ...
+    async def clear(self) -> None: ...
 
 @dataclass(frozen=True)
-class MemoryResult:
-    id: str
-    content: str
+class MemoryRecord:
+    text: str
     score: float
     metadata: dict
+    id: str
+
+def make_memory(scope: MemoryScope, user_id: str | None = None) -> Memory | None: ...
 ```
 
 ---
@@ -433,6 +435,12 @@ class MemoryResult:
 ## Knowledge base and retrieval
 
 ```python
+@dataclass
+class Document:
+    text: str
+    metadata: dict = field(default_factory=dict)
+    id: str | None = None
+
 class KnowledgeBase:
     @classmethod
     async def create(
@@ -443,29 +451,28 @@ class KnowledgeBase:
         vector_store: str = "chroma",
     ) -> "KnowledgeBase": ...
 
-    async def add_documents(self, documents: list[str] | list[dict]) -> list[str]: ...
+    async def add_documents(self, documents: list[Document]) -> None: ...
     async def query(self, query: str, *, top_k: int = 5) -> list["RetrievalResult"]: ...
 
 class Retriever:
-    def __init__(self, kb: KnowledgeBase, *, strategy: str = "hybrid") -> None: ...
-    async def retrieve(self, query: str, *, top_k: int = 5) -> list["RetrievalResult"]: ...
+    def __init__(self, kb: KnowledgeBase, *, top_k: int = 5) -> None: ...
+    async def retrieve(self, query: str, *, top_k: int | None = None) -> list["RetrievalResult"]: ...
 
 class AgenticRetriever:
-    def __init__(
-        self,
-        base_retriever: Retriever,
-        *,
-        llm: ModelConfig,
-        max_rounds: int = 3,
-        top_k_per_round: int = 5,
-    ) -> None: ...
-    async def retrieve(self, query: str) -> list["RetrievalResult"]: ...
+    def __init__(self, kb: KnowledgeBase, *, top_k: int = 5, max_hops: int = 3) -> None: ...
+    async def retrieve(self, query: str, *, max_hops: int | None = None) -> list["RetrievalResult"]: ...
 
-class GraphKnowledgeBase:
+class GraphKnowledgeBase(KnowledgeBase):
     @classmethod
-    async def create(cls, name: str) -> "GraphKnowledgeBase": ...
-    async def add_documents(self, documents: list[str]) -> None: ...
-    async def query(self, query: str, *, use_graph: bool = True, top_k: int = 5) -> list["RetrievalResult"]: ...
+    async def create(
+        cls,
+        name: str,
+        *,
+        embedding_model: str = "text-embedding-3-small",
+        vector_store: str = "chroma",
+    ) -> "GraphKnowledgeBase": ...
+    async def add_entity(self, entity_id: str, text: str, *, links: list[str] | None = None) -> None: ...
+    async def retrieve(self, query: str, *, top_k: int = 5, use_graph: bool = True) -> list["RetrievalResult"]: ...
 
 @dataclass(frozen=True)
 class RetrievalResult:
@@ -478,16 +485,40 @@ class RetrievalResult:
 
 ## SwarmFlow
 
-```python
-def parallel(agents: list[Agent], prompt: str) -> SwarmFlowSpec: ...
-def pipeline(agents: list[Agent], prompt: str) -> SwarmFlowSpec: ...
-def phase(groups: list[SwarmFlowSpec]) -> SwarmFlowSpec: ...
-async def run_swarmflow(spec: SwarmFlowSpec, *, prompt: str) -> "SwarmFlowResult": ...
+### OOP interface (`openjiuwen.sdk.swarm`)
 
-@dataclass(frozen=True)
-class SwarmFlowResult:
+```python
+class SwarmFlow:
+    @classmethod
+    def create(
+        cls,
+        agents: list[Agent],
+        strategy: str = "best_of",   # "best_of" | "majority_vote" | "first"
+    ) -> "SwarmFlow": ...
+
+    async def run(self, prompt: str, *, session_id: str | None = None) -> "SwarmResult": ...
+
+@dataclass
+class SwarmResult:
     output: str
-    per_agent: dict[str, str]
+    strategy: str
+    candidates: list[str]
+    metadata: dict
+```
+
+### Functional interface (`openjiuwen.sdk.swarmflow`)
+
+```python
+async def parallel(*tasks) -> list[str]: ...
+async def pipeline(*tasks) -> str: ...
+async def phase(name: str, *tasks) -> list[str]: ...
+async def run_swarmflow(*, script, args, meta) -> "SwarmFlowResult": ...
+
+@dataclass
+class SwarmFlowResult:
+    final_output: str
+    phases: list[dict]
+    metadata: dict
 ```
 
 ---
@@ -495,27 +526,47 @@ class SwarmFlowResult:
 ## Evaluation
 
 ```python
-@dataclass(frozen=True)
+@dataclass
 class EvalCase:
     input: str
     expected: str
+    prediction: str = ""
+    scores: dict[str, float] = field(default_factory=dict)
     metadata: dict = field(default_factory=dict)
 
-class Metric(Protocol):
-    async def score(self, prediction: str, expected: str) -> float: ...
+class Metric(abc.ABC):
+    name: str
+    async def score(self, case: EvalCase) -> float: ...
 
-class ExactMatchMetric: ...
-class LLMAsJudgeMetric:
-    def __init__(self, model: ModelConfig | None = None) -> None: ...
+class ExactMatchMetric(Metric):   # name = "exact_match"
+    ...
+
+class LLMAsJudgeMetric(Metric):   # name = "llm_judge"
+    def __init__(self, *, criteria: str = "quality", model: str = "gpt-4o") -> None: ...
 
 class MetricEvaluator:
-    def __init__(self, agent: Agent, metrics: list[Metric]) -> None: ...
-    async def run(self, cases: list[EvalCase]) -> "EvalResult": ...
+    def __init__(self, metrics: list[Metric]) -> None: ...
+    async def batch_evaluate(self, cases: list[EvalCase]) -> list[EvalCase]: ...
+    async def evaluate(self, case: EvalCase) -> EvalCase: ...
+    def aggregate(self, cases: list[EvalCase]) -> "EvalResult": ...
+
+Evaluator = MetricEvaluator   # alias
+
+@dataclass
+class EvalResult:
+    cases: list[EvalCase]
+    aggregate: dict[str, float]
+    total_cases: int
+
+class HITTEvaluator:
+    def __init__(self, *, threshold: float = 0.7) -> None: ...
+    def evaluate(self, result: EvalResult) -> "HITTResult": ...
 
 @dataclass(frozen=True)
-class EvalResult:
-    cases: list[dict]
-    summary: dict[str, float]
+class HITTResult:
+    review_fraction: float
+    hitt_score: float
+    review_count: int
 ```
 
 ---
@@ -525,12 +576,20 @@ class EvalResult:
 ```python
 @dataclass(frozen=True)
 class OtelTracerConfig:
-    service_name: str
     endpoint: str = "http://localhost:4317"
-    insecure: bool = True
+    service_name: str = "jiuwenswarm"
+    sample_rate: float = 1.0
+    redact_llm_content: bool = False
     resource_attributes: dict[str, str] = field(default_factory=dict)
+    headers: dict[str, str] = field(default_factory=dict)
 
-def init_otel_tracer(config: OtelTracerConfig) -> None: ...
+class OtelTracer:
+    config: OtelTracerConfig
+    def instrument(self, agent: Agent) -> None: ...
+    def shutdown(self) -> None: ...
+
+def init_otel_tracer(config: OtelTracerConfig | None = None) -> OtelTracer: ...
+def get_tracer() -> OtelTracer | None: ...
 ```
 
 ---
@@ -538,11 +597,35 @@ def init_otel_tracer(config: OtelTracerConfig) -> None: ...
 ## Workspace
 
 ```python
+@dataclass(frozen=True)
+class WorkspaceConfig:
+    root: str = "."
+    sandbox: bool = False
+    sandbox_image: str = "python:3.11-slim"
+    max_file_size: int = 10 * 1024 * 1024   # 10 MB
+    allowed_extensions: tuple[str, ...] = ()
+
 class Workspace:
-    def __init__(self, root: str | Path, *, sandbox: bool = False) -> None: ...
-    def diff(self) -> str: ...
+    def __init__(
+        self,
+        root: str | Path = ".",
+        *,
+        sandbox: bool = False,
+        sandbox_image: str = "python:3.11-slim",
+        config: WorkspaceConfig | None = None,
+    ) -> None: ...
+
+    async def read(self, path: str | Path) -> str: ...
+    async def write(self, path: str | Path, content: str) -> None: ...
+    async def run_command(self, cmd: str | list[str], *, timeout: float = 60.0) -> str: ...
+    async def diff(self) -> str: ...
+
     @property
-    def modified_files(self) -> list[Path]: ...
+    def root(self) -> Path: ...
+    @property
+    def modified_files(self) -> list[str]: ...
+    @property
+    def created_files(self) -> list[str]: ...
 ```
 
 ---
@@ -550,23 +633,29 @@ class Workspace:
 ## Checkpoint backends
 
 ```python
-class SessionStore(Protocol):
-    async def save(self, session_id: str, data: dict) -> None: ...
-    async def load(self, session_id: str) -> dict | None: ...
-    async def delete(self, session_id: str) -> None: ...
+class CheckpointerBackend:
+    """Abstract base class. Subclass to create custom backends."""
+    async def save(self, checkpoint_id: str, state: dict) -> None: ...
+    async def load(self, checkpoint_id: str) -> dict: ...   # raises CheckpointError if missing
     async def list(self) -> list[str]: ...
+    async def delete(self, checkpoint_id: str) -> None: ...
 
-class CheckpointerBackend(Protocol):
-    async def save_checkpoint(self, checkpoint_id: str, data: dict) -> None: ...
-    async def load_checkpoint(self, checkpoint_id: str) -> dict | None: ...
-    async def list_checkpoints(self) -> list[str]: ...
+# Built-in (openjiuwen.sdk.contrib.memory_checkpoint)
+class InMemoryCheckpointBackend(CheckpointerBackend): ...
 
-def register_store(name: str, cls: type[SessionStore]) -> None: ...
-def register_checkpointer(name: str, cls: type[CheckpointerBackend]) -> None: ...
+# Optional (openjiuwen.sdk.contrib.redis_checkpoint)
+class RedisCheckpointBackend(CheckpointerBackend):
+    def __init__(self, url: str, *, key_prefix: str = "ckpt:", ttl: int | None = None) -> None: ...
 ```
 
-Built-in: `SqliteSessionStore`, `SqliteCheckpointer`.
-Contrib: `PostgresSessionStore` (`sdk/contrib/postgres.py`), `S3Checkpointer` (`sdk/contrib/s3.py`).
+Register custom backends with the extensions registry:
+
+```python
+from openjiuwen.sdk.extensions import register_checkpointer, get_checkpointer
+
+register_checkpointer("memory", InMemoryCheckpointBackend())
+backend = get_checkpointer("memory")
+```
 
 ---
 
@@ -574,22 +663,56 @@ Contrib: `PostgresSessionStore` (`sdk/contrib/postgres.py`), `S3Checkpointer` (`
 
 ```python
 @dataclass(frozen=True)
-class ImageInput:
-    content: bytes
-    mime_type: str
+class VisionModelConfig:
+    model: str = "gpt-4o"
+    max_tokens: int | None = None
 
+@dataclass(frozen=True)
+class AudioModelConfig:
+    model: str = "whisper-1"
+    language: str | None = None
+
+@dataclass
+class ImageInput:
     @classmethod
     def from_file(cls, path: str | Path) -> "ImageInput": ...
     @classmethod
     def from_url(cls, url: str) -> "ImageInput": ...
+    def to_base64(self) -> str | None: ...
 
-@dataclass(frozen=True)
+@dataclass
 class AudioInput:
-    content: bytes
-    mime_type: str
-
     @classmethod
     def from_file(cls, path: str | Path) -> "AudioInput": ...
+    @classmethod
+    def from_url(cls, url: str) -> "AudioInput": ...
+
+@dataclass
+class Attachment:
+    @classmethod
+    def from_file(cls, path: str | Path) -> "Attachment": ...
+    def to_base64(self) -> str: ...
+
+class MultimodalAgent:
+    @classmethod
+    async def create(
+        cls,
+        name: str,
+        *,
+        model: ModelConfig | None = None,
+        vision_config: VisionModelConfig | None = None,
+        audio_config: AudioModelConfig | None = None,
+    ) -> "MultimodalAgent": ...
+
+    async def run(
+        self,
+        prompt: str,
+        *,
+        attachments: list[Attachment] | None = None,
+        images: list[ImageInput] | None = None,
+        audio: list[AudioInput] | None = None,
+        session_id: str | None = None,
+    ) -> AgentResult: ...
 ```
 
 ---
@@ -599,13 +722,23 @@ class AudioInput:
 ```python
 @dataclass(frozen=True)
 class MultiRolloutConfig:
-    n: int = 4
-    strategy: str = "best_of"   # "best_of" | "majority_vote"
+    n: int = 3
+    temperature: float | None = None
+    concurrency: int = 3
+    timeout: float | None = None
+
+@dataclass
+class RolloutResult:
+    text: str
+    session_id: str | None = None
+    rollout_idx: int = 0
+    metadata: dict = field(default_factory=dict)
 
 class MultiRolloutExecutor:
-    def __init__(self, agent: Agent, config: MultiRolloutConfig | None = None) -> None: ...
-    async def run(self, prompt: str) -> list[AgentResult]: ...
-    async def best_of(self, prompt: str, evaluator: MetricEvaluator) -> AgentResult: ...
+    def __init__(self, agent: Agent, config: MultiRolloutConfig) -> None: ...
+    async def run(self, prompt: str, *, session_id: str | None = None) -> list[RolloutResult]: ...
+    async def best_of(self, results: list[RolloutResult], *, metric: Metric) -> RolloutResult: ...
+    async def majority_vote(self, results: list[RolloutResult]) -> RolloutResult: ...
 ```
 
 ---
@@ -613,19 +746,24 @@ class MultiRolloutExecutor:
 ## Context engine
 
 ```python
+@dataclass(frozen=True)
+class ContextEngineConfig:
+    max_messages: int = 200
+    token_limit: int = 32_000
+    compression_ratio: float = 0.5
+
+@dataclass(frozen=True)
+class ContextStats:
+    input_tokens: int
+    output_tokens: int
+    compressions_applied: int
+
 class ContextEngine:
-    def __init__(self, processors: list[ContextProcessor]) -> None: ...
-    @property
-    def last_stats(self) -> dict: ...
-
-class ToolResultBudgetProcessor:
-    def __init__(self, max_chars: int = 4000) -> None: ...
-
-class MessageSummaryOffloader:
-    def __init__(self, threshold: int = 20) -> None: ...
-
-class FullCompactProcessor: ...
-class MicroCompactProcessor: ...
+    def __init__(self, config: ContextEngineConfig | None = None) -> None: ...
+    def compress(self, messages: list) -> list: ...
+    def inject(self, messages: list, text: str) -> list: ...
+    def token_count(self, messages: list) -> int: ...
+    last_stats: ContextStats | None
 ```
 
 ---
@@ -633,24 +771,32 @@ class MicroCompactProcessor: ...
 ## Security rails
 
 ```python
-class PermissionLevel(enum.Enum):
+class PermissionLevel(str, enum.Enum):
     ALLOW = "allow"
-    DENY  = "deny"
     ASK   = "ask"
+    DENY  = "deny"
 
 @dataclass(frozen=True)
-class PermissionsSection:
-    tool: str
-    level: PermissionLevel
-    host: "ApprovalHost | None" = None
+class PermissionRule:
+    tool: str = "*"
+    agent: str = "*"
+    level: PermissionLevel = PermissionLevel.ALLOW
+    scope: str = "tool"    # "tool" | "agent" | "default"
 
 class PermissionEngine:
-    def __init__(self, sections: list[PermissionsSection]) -> None: ...
+    def __init__(
+        self,
+        rules: list[PermissionRule] | None = None,
+        *,
+        default_level: PermissionLevel = PermissionLevel.ALLOW,
+    ) -> None: ...
 
-class CLIApprovalHost: ...     # prompts y/n on stdout
+    def check(self, agent_id: str, tool_name: str) -> bool: ...
+    def allow(self, agent_id: str, tool_name: str) -> bool: ...  # alias for check
+    def add_rule(self, rule: PermissionRule) -> None: ...
 
-class ApprovalHost(Protocol):
-    async def request_approval(self, tool_name: str, args: dict) -> bool: ...
+    @property
+    def rules(self) -> list[PermissionRule]: ...
 ```
 
 ---
@@ -658,12 +804,45 @@ class ApprovalHost(Protocol):
 ## LSP integration
 
 ```python
-# openjiuwen.sdk.lsp
+@dataclass(frozen=True)
+class LSPPosition:
+    line: int
+    character: int
 
-async def initialize_lsp(server_cmd: list[str]) -> None: ...
-def get_lsp_tool() -> SdkTool: ...
-async def get_pending_lsp_diagnostics() -> list[dict]: ...
-async def shutdown_lsp() -> None: ...
+@dataclass(frozen=True)
+class LSPRange:
+    start: LSPPosition
+    end: LSPPosition
+
+@dataclass(frozen=True)
+class LSPDiagnostic:
+    message: str
+    severity: str = "error"    # "error" | "warning" | "information" | "hint"
+    range: LSPRange = ...
+    source: str = ""
+    code: str | None = None
+
+@dataclass
+class LSPCompletionItem:
+    label: str
+    kind: str = "text"
+    detail: str = ""
+    documentation: str = ""
+
+class LSPIntegration:
+    @classmethod
+    def attach(
+        cls,
+        agent: Agent,
+        server_cmd: list[str] | str,
+        *,
+        root_uri: str = "",
+        language_id: str = "python",
+    ) -> "LSPIntegration": ...
+
+    async def complete(self, uri: str, *, line: int = 0, character: int = 0) -> list[LSPCompletionItem]: ...
+    async def diagnose(self, uri: str) -> list[LSPDiagnostic]: ...
+    async def shutdown(self) -> None: ...
 ```
 
 ---
@@ -673,29 +852,39 @@ async def shutdown_lsp() -> None: ...
 ```python
 @dataclass(frozen=True)
 class RLConfig:
-    algorithm: str = "ppo"
-    lr: float = 1e-4
-    batch_size: int = 8
-    reward_threshold: float = 0.5
+    algorithm: str = "ppo"    # "ppo" | "dpo" | "grpo"
+    reward_fn: Callable[[str], float] | None = None
+    learning_rate: float = 1e-5
+    rollouts_per_step: int = 4
+    online: bool = True
+    max_trajectory_len: int = 50
 
-class RewardRegistry:
-    def register(self, name: str, fn: Callable[["RolloutWithReward"], float]) -> None: ...
-    def get(self, name: str) -> Callable: ...
-
-@dataclass(frozen=True)
-class RolloutWithReward:
+@dataclass
+class RLTrajectory:
     prompt: str
-    outcome: str
-    reward: float
-    metadata: dict
+    response: str
+    reward: float = 0.0
+    num_turns: int = 1
+    metadata: dict = field(default_factory=dict)
 
-class OnlineRLOptimizer:
-    def __init__(self, config: RLConfig, reward_registry: RewardRegistry) -> None: ...
-    def get_trajectories(self) -> list[RolloutWithReward]: ...
+@dataclass
+class RLStepResult:
+    text: str
+    reward: float = 0.0
+    session_id: str | None = None
+    updated: bool = False
 
-class OfflineRLOptimizer:
-    def __init__(self, config: RLConfig, reward_registry: RewardRegistry) -> None: ...
-    def export_trajectories(self, path: str) -> None: ...
+class OnlineRL:
+    def __init__(self, agent: Agent, config: RLConfig) -> None: ...
+    async def step(self, prompt: str, *, reward_fn: Callable[[str], float] | None = None) -> RLStepResult: ...
+    def get_trajectories(self) -> list[RLTrajectory]: ...
+    def clear_trajectories(self) -> None: ...
+
+class OfflineRL:
+    def __init__(self, agent: Agent, config: RLConfig) -> None: ...
+    async def step(self, prompt: str, *, reward_fn: Callable[[str], float] | None = None) -> RLStepResult: ...
+    def get_trajectories(self) -> list[RLTrajectory]: ...
+    def export_trajectories(self, path: str) -> None: ...   # JSONL
 ```
 
 ---
@@ -703,25 +892,58 @@ class OfflineRLOptimizer:
 ## Builders
 
 ```python
+class AgentBuilder:
+    """Generic fluent builder."""
+    def __init__(self, name: str = "agent") -> None: ...
+    def with_model(self, model: ModelConfig) -> "AgentBuilder": ...
+    def with_tools(self, tools: list[SdkTool]) -> "AgentBuilder": ...
+    def with_hooks(self, hooks: Hooks) -> "AgentBuilder": ...
+    def with_memory(self, scope: MemoryScope, *, user_id: str | None = None) -> "AgentBuilder": ...
+    def with_system_prompt(self, prompt: str) -> "AgentBuilder": ...
+    def with_workspace(self, workspace: Workspace) -> "AgentBuilder": ...
+    def with_knowledge_bases(self, kbs: list[KnowledgeBase]) -> "AgentBuilder": ...
+    def build(self) -> "_BuiltAgent": ...
+
 class LlmAgentBuilder:
-    def with_name(self, name: str) -> "LlmAgentBuilder": ...
-    def with_model(self, model: ModelConfig) -> "LlmAgentBuilder": ...
-    def with_tools(self, tools: list[SdkTool]) -> "LlmAgentBuilder": ...
-    def with_memory(self, scope: MemoryScope) -> "LlmAgentBuilder": ...
-    def with_knowledge_bases(self, kbs: list[KnowledgeBase]) -> "LlmAgentBuilder": ...
-    async def build(self) -> Agent: ...
+    """LLM-specific fluent builder."""
+    def name(self, name: str) -> "LlmAgentBuilder": ...
+    def system_prompt(self, prompt: str) -> "LlmAgentBuilder": ...
+    def model(self, model_name: str) -> "LlmAgentBuilder": ...
+    def temperature(self, temp: float) -> "LlmAgentBuilder": ...
+    def max_turns(self, n: int) -> "LlmAgentBuilder": ...
+    def tool(self, tool_name_or_obj: "str | SdkTool") -> "LlmAgentBuilder": ...
+    def with_hooks(self, hooks: Hooks) -> "LlmAgentBuilder": ...
+    def with_workspace(self, workspace: Workspace) -> "LlmAgentBuilder": ...
+    def with_model_config(self, model_cfg: ModelConfig) -> "LlmAgentBuilder": ...
+    def build(self) -> "_BuiltAgent": ...   # call await agent.init() before agent.run()
 
 class WorkflowBuilder:
-    def add_step(self, node: WorkflowNode) -> "WorkflowBuilder": ...
-    def branch(self, condition: str, true_target: str, false_target: str) -> "WorkflowBuilder": ...
-    def build(self) -> Workflow: ...
+    def name(self, name: str) -> "WorkflowBuilder": ...
+    def with_model_config(self, model_cfg: ModelConfig) -> "WorkflowBuilder": ...
+    def add_component(self, component: WorkflowNode) -> "WorkflowBuilder": ...
+    def add_edge(self, src, dst) -> "WorkflowBuilder": ...
+    def build(self) -> "_BuiltWorkflowAgent": ...
+
+class PromptBuilder:
+    def system(self, text: str) -> "PromptBuilder": ...
+    def user(self, text: str) -> "PromptBuilder": ...
+    def assistant(self, text: str) -> "PromptBuilder": ...
+    def few_shot(self, examples: list[tuple[str, str]]) -> "PromptBuilder": ...
+    def build(self) -> str: ...
+    def build_messages(self) -> list[dict[str, str]]: ...
 ```
 
 ---
 
 ## Prompt builders
 
+`PromptBuilder` (implemented, part of `openjiuwen.sdk.builder`) covers structured prompt assembly.
+See the **Builders** section above.
+
+The following higher-order builders are planned for a future release:
+
 ```python
+# Planned — not yet implemented
 class MetaTemplateBuilder:
     def __init__(self, agent: Agent, n: int = 5) -> None: ...
     async def generate(self, task_description: str) -> list[str]: ...
@@ -750,17 +972,21 @@ class EventEmitter:
 
 ```
 SdkError
+├── RuntimeNotAvailableError
 ├── ConnectionError
 ├── AuthError
-├── SessionNotFoundError
+├── SessionError
+├── AgentError
 ├── ToolError
+├── CheckpointError
+├── TeamError
+├── StreamError
 ├── TimeoutError
-├── ProtocolError
-├── WorkflowError
-├── A2AError
-├── ServerError           carries .status_code
-└── ConfigError
+├── ServerError           carries .status_code and .message
+└── WorkflowError         (raised by Workflow.run())
 ```
+
+`A2AError` is raised by `RemoteAgent` operations and is a subclass of `SdkError`.
 
 ---
 

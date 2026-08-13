@@ -350,12 +350,12 @@ agent = await Agent.create(
 ### Security rails and permission engine
 
 ```python
-from openjiuwen.sdk import PermissionEngine, PermissionsSection, CLIApprovalHost
+from openjiuwen.sdk import PermissionEngine, PermissionRule, PermissionLevel
 
-engine = PermissionEngine([
-    PermissionsSection(tool="shell", level="ask", host=CLIApprovalHost()),
-    PermissionsSection(tool="read_file", level="allow"),
-    PermissionsSection(tool="delete_file", level="deny"),
+engine = PermissionEngine(rules=[
+    PermissionRule(tool="shell", level=PermissionLevel.ASK),
+    PermissionRule(tool="read_file", level=PermissionLevel.ALLOW),
+    PermissionRule(tool="delete_file", level=PermissionLevel.DENY),
 ])
 agent = await Agent.create("coder", model=cfg, permission_engine=engine)
 ```
@@ -363,14 +363,18 @@ agent = await Agent.create("coder", model=cfg, permission_engine=engine)
 ### LSP integration
 
 ```python
-from openjiuwen.sdk import lsp
+from openjiuwen.sdk import LSPIntegration
 
-await lsp.initialize_lsp(["pyright", "--stdio"])
-lsp_tool = lsp.get_lsp_tool()
-agent    = await Agent.create("coder", model=cfg, tools=[lsp_tool])
+agent = await Agent.create("coder", model=cfg)
+lsp = LSPIntegration.attach(
+    agent,
+    server_cmd=["pyright-langserver", "--stdio"],
+    root_uri="file:///path/to/project",
+)
 
-diagnostics = await lsp.get_pending_lsp_diagnostics()
-await lsp.shutdown_lsp()
+diagnostics = await lsp.diagnose("src/utils.py")
+completions = await lsp.complete("src/utils.py", line=10, character=4)
+await lsp.shutdown()
 ```
 
 ### Human-in-the-loop (HITT)
@@ -390,67 +394,85 @@ team = await Team.create([
 ### Context engine
 
 ```python
-from openjiuwen.sdk import (
-    ContextEngine, ToolResultBudgetProcessor,
-    MessageSummaryOffloader, FullCompactProcessor,
-)
+from openjiuwen.sdk import ContextEngine, ContextEngineConfig
 
-engine = ContextEngine([
-    ToolResultBudgetProcessor(max_chars=2000),
-    MessageSummaryOffloader(threshold=20),
-    FullCompactProcessor(),
-])
+engine = ContextEngine(ContextEngineConfig(
+    max_messages=100,
+    token_limit=16_000,
+    compression_ratio=0.5,
+))
 agent = await Agent.create("coder", model=cfg, context_engine=engine)
-stats = engine.last_stats   # {"before_tokens": 8200, "after_tokens": 3100}
+
+# After agent.run():
+stats = engine.last_stats   # ContextStats(input_tokens=..., compressions_applied=...)
 ```
 
 ### Online RL and trajectory collection
 
 ```python
-from openjiuwen.sdk import OnlineRLOptimizer, RLConfig, RewardRegistry
+from openjiuwen.sdk import OnlineRL, OfflineRL, RLConfig
 
-registry = RewardRegistry()
-registry.register("code_quality", lambda r: 1.0 if "tests passed" in r.outcome else 0.1)
+def code_quality_reward(text: str) -> float:
+    return 1.0 if "tests passed" in text else 0.1
 
-optimizer = OnlineRLOptimizer(RLConfig(algorithm="ppo", lr=1e-4), registry)
-agent     = await Agent.create("rl-agent", model=cfg, rl_optimizer=optimizer)
+agent = await Agent.create("rl-agent", model=cfg)
 
-await agent.run("Write and test a binary search function.")
-trajectories = optimizer.get_trajectories()
+# Online: weight updates happen every rollouts_per_step steps
+rl = OnlineRL(agent, RLConfig(algorithm="ppo", reward_fn=code_quality_reward, rollouts_per_step=8))
+result = await rl.step("Write and test a binary search function.")
+trajectories = rl.get_trajectories()
+
+# Offline: collect trajectories, export for batch training
+rl_off = OfflineRL(agent, RLConfig(online=False, reward_fn=code_quality_reward))
+await rl_off.step("Write a sorting algorithm.")
+rl_off.export_trajectories("trajectories.jsonl")
 ```
 
 ### MCP server exposure
 
 ```python
-# Subprocess mode — speaks MCP stdio JSON-RPC
+# SDK-embedded mode (recommended)
+from openjiuwen.sdk import MCPServer
+
+server = MCPServer(agents=[researcher, writer])
+await server.start(host="localhost", port=9000)
+# ... later:
+await server.stop()
+
+# Or as an async context manager:
+async with MCPServer(agents=[researcher]) as server:
+    ...   # server is running
+
+# Subprocess mode — MCP stdio JSON-RPC (for Claude Desktop, etc.)
 import subprocess, os
 proc = subprocess.Popen(
     ["python", "-m", "openjiuwen.agent_teams.mcp"],
     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
     env={**os.environ, "OPENJIUWEN_TEAM_JOIN": "team://my-team@localhost:9000"},
 )
-
-# Embedded mode
-from openjiuwen.agent_teams.mcp import build_server
-from mcp.server.stdio import stdio_server
-import asyncio
-
-async def main():
-    server = build_server()
-    async with stdio_server() as (reader, writer):
-        await server.run(reader, writer, server.create_initialization_options())
-
-asyncio.run(main())
 ```
 
 ### Agent builder
 
 ```python
-from openjiuwen.sdk import LlmAgentBuilder, WorkflowBuilder
+from openjiuwen.sdk import LlmAgentBuilder, AgentBuilder, PromptBuilder, ModelConfig
 
-agent = await (
+# Fluent LLM-agent builder
+built = (
     LlmAgentBuilder()
-    .with_name("assistant")
+    .name("assistant")
+    .system_prompt("You are a helpful assistant.")
+    .model("claude-3-5-sonnet-20241022")
+    .temperature(0.7)
+    .tool("web_search")
+    .build()
+)
+await built.init()                        # initialises the underlying Agent
+result = await built.run("Hello!")
+
+# Generic builder (supports memory, workspace, knowledge bases)
+built2 = (
+    AgentBuilder("my-agent")
     .with_model(ModelConfig(provider="anthropic", model="claude-3-5-sonnet-20241022"))
     .with_tools([fetch_url, word_count])
     .with_memory(MemoryScope.USER)
@@ -461,10 +483,21 @@ agent = await (
 ### Prompt builder
 
 ```python
-from openjiuwen.sdk import MetaTemplateBuilder, FeedbackPromptBuilder
+from openjiuwen.sdk import PromptBuilder
 
-candidates = await MetaTemplateBuilder(agent, n=5).generate("customer support bot")
-refined    = await FeedbackPromptBuilder(agent).refine(prompt, bad_cases=[...])
+prompt = (
+    PromptBuilder()
+    .system("You are a concise assistant.")
+    .few_shot([
+        ("What is 2+2?", "4"),
+        ("Capital of France?", "Paris"),
+    ])
+    .user("What is the speed of light?")
+    .build()
+)
+
+# Or get structured messages list for direct API use:
+messages = PromptBuilder().system("Be helpful.").user("Hello").build_messages()
 ```
 
 ### Custom backends
@@ -559,51 +592,64 @@ openjiuwen/
 │   ├── agent.py                  Agent façade
 │   ├── session.py                Session façade
 │   ├── tools.py                  @tool, SdkTool, ToolParam
-│   ├── workflow.py               Workflow DAG, LLMNode, ToolNode, ConditionNode
+│   ├── workflow.py               Workflow DAG, LLMNode, ToolNode, ConditionNode,
+│   │                             SubWorkflowNode, LLMComponent, Start, End
 │   ├── a2a.py                    RemoteAgent (A2A client)
 │   ├── hooks.py                  Hooks lifecycle container
 │   ├── events.py                 EventEmitter
-│   ├── team.py                   Team, TeamSpec, SwarmFlow
+│   ├── team.py                   Team, TeamSpec
 │   ├── config.py                 ModelConfig, RemoteConfig, SdkConfig
 │   ├── errors.py                 SdkError hierarchy
-│   ├── memory.py                 MemoryScope, Memory
-│   ├── knowledge.py              KnowledgeBase, Retriever, AgenticRetriever, GraphKnowledgeBase
-│   ├── workspace.py              Workspace
-│   ├── multimodal.py             ImageInput, AudioInput
-│   ├── rollout.py                MultiRolloutExecutor, MultiRolloutConfig
-│   ├── task_loop.py              TaskLoopEventHandler, ToolGuard, ToolResult
-│   ├── eval.py                   EvalCase, MetricEvaluator, metrics
-│   ├── observability.py          init_otel_tracer, OtelTracerConfig
-│   ├── context_engine.py         ContextEngine and processors
-│   ├── security.py               PermissionEngine, PermissionsSection
-│   ├── lsp.py                    LSP integration
-│   ├── rl.py                     OnlineRLOptimizer, OfflineRLOptimizer, RLConfig
-│   ├── builder.py                LlmAgentBuilder, WorkflowBuilder
-│   ├── prompt_builder.py         MetaTemplateBuilder, FeedbackPromptBuilder
-│   ├── stores.py                 SessionStore, CheckpointerBackend protocols; register_*
-│   ├── swarmflow.py              parallel, pipeline, phase, run_swarmflow
+│   ├── memory.py                 MemoryScope, Memory, MemoryRecord, make_memory
+│   ├── knowledge.py              KnowledgeBase, Document, Retriever,
+│   │                             AgenticRetriever, GraphKnowledgeBase, RetrievalResult
+│   ├── workspace.py              Workspace, WorkspaceConfig
+│   ├── multimodal.py             MultimodalAgent, ImageInput, AudioInput,
+│   │                             VisionModelConfig, AudioModelConfig, Attachment
+│   ├── rollout.py                MultiRolloutExecutor, MultiRolloutConfig, RolloutResult
+│   ├── eval.py                   EvalCase, EvalResult, Metric, ExactMatchMetric,
+│   │                             LLMAsJudgeMetric, MetricEvaluator, HITTEvaluator
+│   ├── evaluation.py             re-exports everything from eval.py
+│   ├── tracing.py                OtelTracer, OtelTracerConfig, init_otel_tracer, get_tracer
+│   ├── context.py                ContextEngine, ContextEngineConfig, ContextStats
+│   ├── permissions.py            PermissionEngine, PermissionLevel, PermissionRule
+│   ├── lsp.py                    LSPIntegration, LSPDiagnostic, LSPCompletionItem
+│   ├── rl.py                     OnlineRL, OfflineRL, RLConfig, RLTrajectory
+│   ├── builder.py                AgentBuilder, LlmAgentBuilder, WorkflowBuilder,
+│   │                             PromptBuilder
+│   ├── swarm.py                  SwarmFlow, SwarmResult (OOP interface)
+│   ├── swarmflow.py              parallel, pipeline, phase, run_swarmflow (functional)
+│   ├── mcp.py                    MCPServer façade
 │   ├── contrib/
-│   │   ├── postgres.py           PostgresSessionStore
-│   │   └── s3.py                 S3Checkpointer
+│   │   ├── memory_checkpoint.py  InMemoryCheckpointBackend
+│   │   └── redis_checkpoint.py   RedisCheckpointBackend (optional; requires redis-py)
+│   ├── extensions/
+│   │   ├── __init__.py           register_store, get_store, register_checkpointer, get_checkpointer
+│   │   ├── store.py              BaseSessionStore abstract class
+│   │   └── checkpointer.py       BaseCheckpointer abstract class
 │   └── _internal/
 │       ├── runner_bridge.py      wraps openjiuwen.core Runner
 │       ├── session_bridge.py     wraps SessionManager
 │       ├── remote_bridge.py      WebSocket/REST client calls
-│       ├── team_bridge.py        wraps team runtime
 │       ├── workflow_bridge.py    wraps workflow runtime
+│       ├── memory_bridge.py      wraps memory store
+│       ├── knowledge_bridge.py   wraps knowledge store
+│       ├── swarm_bridge.py       wraps swarm execution
+│       ├── mcp_bridge.py         wraps MCP server
+│       ├── permission_bridge.py  wraps permission engine
 │       └── sync_wrapper.py       run_sync helper
 │
-├── gateway/                      HTTP + WebSocket gateway
+├── gateway/                      HTTP + WebSocket gateway (Phase 3)
 │   ├── app.py                    build_gateway_app()
 │   ├── auth.py                   Bearer token middleware
 │   ├── rest/                     FastAPI route handlers
 │   └── ws/                       WebSocket handler and dispatcher
 │
 └── agent_teams/
-    └── mcp.py                    build_server(), MCP stdio entrypoint
+    └── mcp.py                    MCP stdio entrypoint (subprocess mode)
 
 packages/
-└── sdk/                          TypeScript SDK (@jiuwenswarm/sdk)
+└── sdk/                          TypeScript SDK (@jiuwenswarm/sdk) (Phase 4)
     └── src/
         ├── client/               JiuwenSwarmClient, ReconnectScheduler
         ├── session/              SessionManager

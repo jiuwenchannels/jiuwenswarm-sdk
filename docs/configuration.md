@@ -172,10 +172,12 @@ interface ReconnectConfig {
 ```python
 @dataclass(frozen=True)
 class OtelTracerConfig:
-    service_name: str
     endpoint: str = "http://localhost:4317"   # gRPC OTLP collector
-    insecure: bool = True
+    service_name: str = "jiuwenswarm"
+    sample_rate: float = 1.0
+    redact_llm_content: bool = False          # strip prompts/responses from spans (PII)
     resource_attributes: dict[str, str] = field(default_factory=dict)
+    headers: dict[str, str] = field(default_factory=dict)
 ```
 
 ---
@@ -185,10 +187,12 @@ class OtelTracerConfig:
 ```python
 @dataclass(frozen=True)
 class RLConfig:
-    algorithm: str = "ppo"          # "ppo" | "dpo" | "grpo"
-    lr: float = 1e-4
-    batch_size: int = 8
-    reward_threshold: float = 0.5
+    algorithm: str = "ppo"              # "ppo" | "dpo" | "grpo"
+    reward_fn: Callable[[str], float] | None = None
+    learning_rate: float = 1e-5
+    rollouts_per_step: int = 4          # collect this many rollouts before a weight update
+    online: bool = True                 # False = offline/trajectory-export mode
+    max_trajectory_len: int = 50
 ```
 
 ---
@@ -198,8 +202,10 @@ class RLConfig:
 ```python
 @dataclass(frozen=True)
 class MultiRolloutConfig:
-    n: int = 4                      # number of parallel rollouts
-    strategy: str = "best_of"       # "best_of" | "majority_vote"
+    n: int = 3                      # number of parallel rollouts
+    temperature: float | None = None
+    concurrency: int = 3            # max simultaneous agent calls
+    timeout: float | None = None
 ```
 
 ---
@@ -209,8 +215,11 @@ class MultiRolloutConfig:
 ```python
 @dataclass(frozen=True)
 class WorkspaceConfig:
-    root: str | Path
-    sandbox: bool = False           # True = isolate file/shell ops to root
+    root: str = "."
+    sandbox: bool = False           # True = block paths outside root
+    sandbox_image: str = "python:3.11-slim"
+    max_file_size: int = 10 * 1024 * 1024   # bytes; 0 = unlimited
+    allowed_extensions: tuple[str, ...] = ()  # empty = all extensions allowed
 ```
 
 ---
