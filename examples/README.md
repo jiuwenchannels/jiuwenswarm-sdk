@@ -47,9 +47,10 @@ jiuwenswarm serve   # ws://localhost:19000  and  http://localhost:19001
 | `python/03_session_management.py` | §3 | Session CRUD, multi-turn conversation, history |
 | `python/04_custom_tools.py` | §4 | `@tool` decorator — sync, async, enum constraints |
 | `python/05_workflow_advanced.py` | §5 | Full workflow DAG with Start/End/LLM/Branch/Loop nodes |
+| `python/05b_workflow_basic.py` | §5 | Workflow DAG — linear, conditional, streaming (simple variant) |
 | `python/06_long_term_memory.py` | §6 | Long-term memory scopes, `add`, `search`, `delete` |
 | `python/07_knowledge_base_rag.py` | §7 | Knowledge base creation, document ingestion, RAG retrieval |
-| `python/multi_agent_team.py` | §8 | Three-agent team — researcher, writer, reviewer |
+| `python/08_multi_agent_team.py` | §8 | Three-agent team — researcher, writer, reviewer |
 | `python/09_swarmflow.py` | §9 | SwarmFlow — `parallel()`, `pipeline()`, `phase()` |
 | `python/10_evaluation.py` | §10 | EvalCase, ExactMatchMetric, LLMAsJudgeMetric, custom metrics |
 | `python/11_observability.py` | §11 | OpenTelemetry tracing with `init_otel_tracer` |
@@ -58,9 +59,9 @@ jiuwenswarm serve   # ws://localhost:19000  and  http://localhost:19001
 | `python/14_multimodal.py` | §14 | `ImageInput`, `AudioInput`, vision and audio model configs |
 | `python/15_multi_rollout.py` | §15 | `MultiRolloutExecutor`, `best_of()`, parallel rollouts |
 | `python/16_task_loop_hooks.py` | §16 | `TaskLoopEventHandler` full lifecycle, `ToolGuard` |
-| `python/hooks_lifecycle.py` | §16 | `Hooks` in decorator and constructor form (simple variant) |
+| `python/16b_hooks_simple.py` | §16 | `Hooks` in decorator and constructor form (simple variant) |
 | `python/17_a2a_server_and_client.py` | §17 | A2A server side + `RemoteAgent` client + team composition |
-| `python/a2a_remote_agent.py` | §17 | A2A client — run, stream, cancel (simple variant) |
+| `python/17b_a2a_client_only.py` | §17 | A2A client — run, stream, cancel (simple variant) |
 | `python/18_sub_workflow.py` | §18 | `SubWorkflowComponent`, input/output mapping |
 | `python/19_agent_builder.py` | §19 | `LlmAgentBuilder` fluent API, `WorkflowBuilder` |
 | `python/20_prompt_builder.py` | §20 | `MetaTemplateBuilder`, `FeedbackPromptBuilder.refine()` |
@@ -73,7 +74,6 @@ jiuwenswarm serve   # ws://localhost:19000  and  http://localhost:19001
 | `python/27_context_engine.py` | §27 | `ContextEngine` processors: budget, summary, compact |
 | `python/28_online_rl.py` | §28 | `OnlineRLOptimizer`, `OfflineRLOptimizer`, reward registry |
 | `python/29_mcp_server.py` | §29 | MCP server — subprocess and embedded `build_server()` modes |
-| `python/workflow_dag.py` | §5 | Workflow DAG — linear, conditional, streaming (simple variant) |
 
 ---
 
