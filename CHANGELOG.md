@@ -1,124 +1,189 @@
 # Changelog
 
-All notable changes to `openjiuwen-sdk` are documented here.
+All notable changes to `openjiuwen-sdk` and `@jiuwenswarm/sdk` are documented here.
 Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [1.0.0]
 
-### Added
-- `docs/overview.md` — project description and current feature inventory
-- `docs/architecture.md` — bridge/façade pattern, module layout, dependency rules
-- `docs/contributing.md` — how to add tools, workflow nodes, backends, and tests
-- `docs/configuration.md` — complete env var and config-class reference
-- `examples/python/` — all 29+4 Python SDK examples (§01–§29, plus `05b`, `16b`, `17b`)
-- `examples/typescript/` — 6 TypeScript SDK examples (§01–§06)
-- `examples/rest/` — 9 REST / cURL shell examples (§01–§09)
+First stable release. Covers all four phases of the original development plan.
+
+### Python SDK (`openjiuwen-sdk`)
+
+**Core agent execution**
+- `Agent.create()` — in-process agent backed by `openjiuwen.core` runtime
+- `Agent.connect()` — remote agent connected via WebSocket or REST
+- `agent.run()` — blocking execution returning `AgentResult`
+- `agent.stream()` — token-by-token `AsyncIterator[str]`
+- `agent.run_sync()` — sync wrapper for scripts
+- `agent.checkpoint()` / `Agent.restore()` — opaque checkpoint ID
+
+**Configuration**
+- `ModelConfig` — LLM provider, model, API key, temperature, timeout, retries
+- `RemoteConfig` — server URL, auth token, timeout, retries
+- `SdkConfig` — combined wrapper with `from_env()`
+- All env vars documented in `docs/configuration.md`
+
+**Session management**
+- `Session.create()`, `list()`, `get()`, `delete()`, `history()`
+- `Message` frozen dataclass with role, text, timestamp
+- Automatic session creation on first `run()`
+
+**Tools**
+- `@tool` decorator — sync and async Python functions
+- Full JSON-schema type inference from annotations
+- Optional parameters via default values
+- Enum constraints via `ToolParam`
+- `tool.to_tool_info()` — OpenAI-compatible spec
+- `tool.ainvoke()` / `invoke_sync()` — direct invocation
+
+**Workflow (DAG orchestration)**
+- `Workflow.create()`, `add_node()`, `connect()`, `branch()`
+- `LLMNode`, `ToolNode`, `ConditionNode`, `SubWorkflowComponent`
+- `workflow.run()`, `workflow.stream()`, `workflow.draw()` (Mermaid)
+- Cached compiled graph
+
+**Multi-agent team**
+- `Team.create()`, `team.spawn()`, `team.send()`, `team.status()`
+- `TeamResult`, `TeamStatus` frozen dataclasses
+
+**A2A remote agent client**
+- `RemoteAgent(url, agent_id)` — A2A protocol client
+- `remote.run()`, `remote.stream()`, `remote.cancel()`, `remote.close()`
+- Context manager support
+
+**Lifecycle hooks**
+- `Hooks` container — six event slots, decorator and constructor form
+- `hooks.wire(emitter)` — binds to any `EventEmitter`
+- `Agent.create(hooks=hooks)`
+
+**TaskLoopEventHandler**
+- All lifecycle methods: `on_turn_start`, `on_tool_call`, `on_tool_result`, `on_llm_call`, `on_done`, `on_error`
+- Tool-call interception via early `ToolResult` return
+- `ToolGuard` — raise `ToolError` for tools not in allow-list
+
+**Long-term memory**
+- `MemoryScope.USER` / `.SESSION` / `.GLOBAL`
+- `memory.add()`, `memory.search()`, `memory.delete()`, `memory.list()`
+- `Agent.create(memory_scope=MemoryScope.USER)`
+
+**Knowledge base and RAG**
+- `KnowledgeBase.create()` — vector store management
+- `kb.add_documents()` — chunking, embedding, indexing
+- `Retriever(kb, strategy="hybrid")` — BM25 + vector hybrid retrieval
+- `AgenticRetriever` — multi-round query rewriting with LLM loop
+- `GraphKnowledgeBase` — triple extraction, combined vector+graph retrieval
+- `Agent.create(knowledge_bases=[kb])`
+
+**SwarmFlow structured orchestration**
+- `parallel(agents, prompt)`, `pipeline(agents, prompt)`, `phase(groups)`
+- `run_swarmflow(spec, prompt=...)`
+
+**Evaluation framework**
+- `EvalCase`, `MetricEvaluator`
+- `ExactMatchMetric`, `LLMAsJudgeMetric`, custom `Metric` protocol
+- Batch evaluation with per-case scores and summary
+
+**OpenTelemetry observability**
+- `init_otel_tracer(config)` — gRPC OTLP exporter
+- Automatic spans for agent runs, tool calls, LLM calls
+
+**Workspace**
+- `Workspace(root, sandbox=False)` — bind agent to a directory
+- `workspace.diff()`, `workspace.modified_files`
+- `Agent.create(workspace=ws)`
+
+**Checkpoint/restore — backend registry**
+- `SessionStore` and `CheckpointerBackend` protocols
+- `register_store()`, `register_checkpointer()`
+- Built-in: `SqliteSessionStore`, `SqliteCheckpointer`
+- Contrib: `PostgresSessionStore`, `S3Checkpointer`
+- `Agent.create(checkpoint_store="sqlite", checkpoint_every=5)`
+
+**Multimodal inputs**
+- `ImageInput.from_file()`, `ImageInput.from_url()`
+- `AudioInput.from_file()`
+- `agent.run(prompt, images=[img], audio=[aud])`
+
+**Multi-rollout**
+- `MultiRolloutExecutor(agent, config)`
+- `executor.run(prompt)` → `list[AgentResult]`
+- `executor.best_of(prompt, evaluator)` → `AgentResult`
+
+**Security rails**
+- `PermissionEngine` with `PermissionsSection` allow/deny/ask policies
+- `CLIApprovalHost` — stdout y/n approval
+- `ApprovalHost` protocol for custom approval UIs
+- `Agent.create(permission_engine=pe)`
+
+**LSP integration**
+- `lsp.initialize_lsp(server_cmd)` — any LSP over stdio
+- `lsp.get_lsp_tool()` — expose diagnostics as agent tool
+- `lsp.get_pending_lsp_diagnostics()`, `lsp.shutdown_lsp()`
+
+**Human-in-the-loop (HITT)**
+- `TeamRole.HUMAN_AGENT`, `TeamMemberSpec` with async callback
+- `Team.create(enable_hitt=True)` — pause at decision points
+
+**Context engine**
+- `ContextEngine` with pluggable processors
+- `ToolResultBudgetProcessor`, `MessageSummaryOffloader`, `FullCompactProcessor`, `MicroCompactProcessor`
+- `engine.last_stats` — before/after token counts
+- `Agent.create(context_engine=ce)`
+
+**Online RL and trajectory collection**
+- `RLConfig`, `RewardRegistry`, `RolloutWithReward`
+- `OnlineRLOptimizer` — records reward per run, applies policy updates
+- `OfflineRLOptimizer` — JSONL trajectory export
+- `Agent.create(rl_optimizer=optimizer)`
+
+**MCP server exposure**
+- `python -m openjiuwen.agent_teams.mcp` — subprocess stdio mode
+- `build_server()` — embedded async mode with `mcp.server.stdio`
+
+**Agent builder**
+- `LlmAgentBuilder` fluent API — `.with_name()`, `.with_model()`, `.with_tools()`, `.with_memory()`, `.build()`
+- `WorkflowBuilder` — `.add_step()`, `.branch()`, `.build()`
+
+**Prompt builder**
+- `MetaTemplateBuilder(agent, n)` — generate N candidate prompts
+- `FeedbackPromptBuilder(agent)` — `.refine(prompt, bad_cases)`
+
+**Custom backends (contrib)**
+- `PostgresSessionStore` — asyncpg
+- `S3Checkpointer` — aiobotocore
+
+**EventEmitter**
+- `on`, `off`, `off_all`, `emit`, `emit_async`
+
+**Error hierarchy**
+- `SdkError` + 10 specialised subclasses
 
 ---
 
-## [0.3.0] — 2024-08-xx
+### HTTP + WebSocket Gateway (`openjiuwen.gateway`)
 
-### Added
-- `docs/api-reference.md` — full API reference for all public classes and methods
-- `docs/roadmap.md` — upcoming features and phase plan
-
----
-
-## [0.2.0] — 2024-08-xx
-
-### Added
-- **Workflow DAG façade** (`openjiuwen.sdk.workflow`)
-  - `Workflow.create()`, `add_node()`, `connect()`, `branch()`
-  - `workflow.run()`, `workflow.stream()`, `workflow.draw()`
-  - Node types: `LLMNode`, `ToolNode`, `ConditionNode`
-  - `WorkflowResult` frozen dataclass
-  - `WorkflowError` in error hierarchy
-  - Internal bridge: `sdk/_internal/workflow_bridge.py`
-  - 30 unit tests
-
-- **A2A remote agent client** (`openjiuwen.sdk.a2a`)
-  - `RemoteAgent(url, agent_id)` with `run()`, `stream()`, `cancel()`, `close()`
-  - Context manager support
-  - `A2AResult` frozen dataclass
-  - `A2AError` in error hierarchy
-  - Internal bridge: patchable `_create_a2a_client`, `_a2a_invoke`, `_a2a_stream`
-  - 22 unit tests
-
-- **Lifecycle hooks** (`openjiuwen.sdk.hooks`)
-  - `Hooks` container with six slots: `on_token`, `on_tool_call`, `on_tool_result`, `on_done`, `on_error`, `on_start`
-  - Decorator form (`@hooks.token`, `@hooks.tool_call`, …)
-  - Constructor form (`Hooks(on_token=fn, …)`)
-  - `hooks.wire(emitter)` — binds all callbacks into an `EventEmitter`
-  - `Agent.create(hooks=hooks)` — wired automatically after agent init
-  - 25 unit tests
-
-### Changed
-- `openjiuwen/sdk/__init__.py` — added exports for all new public symbols
+- `build_gateway_app(config: GatewayConfig)` → FastAPI app
+- `python -m openjiuwen.gateway` — standalone server entrypoint
+- Bearer token auth middleware (optional in dev)
+- 19 REST routes under `/v1/` (sessions, chat, agents, tools, knowledge, eval, checkpoints)
+- SSE streaming for `/chat/stream` and `/agents/{id}/stream`
+- WebSocket at `/v1/ws` — full envelope protocol v1
+- A2A routes at `/a2a/` (coexist with REST)
+- OpenAPI spec auto-generated at `/docs` and `/openapi.json`
+- CORS configuration via `GatewayConfig.cors_origins`
 
 ---
 
-## [0.1.0] — 2024-08-xx
+### TypeScript SDK (`@jiuwenswarm/sdk`)
 
-Initial release. Covers Phase 0 (Python public API stabilisation)
-and Phase 1 (core SDK façades).
-
-### Added
-- **Error hierarchy** (`openjiuwen.sdk.errors`)
-  - `SdkError` base class
-  - `ConnectionError`, `AuthError`, `SessionNotFoundError`, `ToolError`,
-    `TimeoutError`, `ProtocolError`, `ServerError`, `ConfigError`
-
-- **Configuration** (`openjiuwen.sdk.config`)
-  - `ModelConfig` — frozen dataclass for in-process LLM config
-  - `RemoteConfig` — frozen dataclass for WebSocket remote config
-  - `SdkConfig` — combined config with `from_env()` classmethod
-  - All fields documented; env var fallbacks tested
-
-- **EventEmitter** (`openjiuwen.sdk.events`)
-  - `on` / `off` / `off_all`
-  - Sync `emit` (schedules async callbacks on loop)
-  - Async `emit_async` (awaits all callbacks in order)
-
-- **Agent façade** (`openjiuwen.sdk.agent`)
-  - `Agent.create(name, model, tools, hooks)` — in-process mode
-  - `Agent.connect(name, config)` — remote WebSocket mode
-  - `agent.run(prompt, session_id)` → `AgentResult`
-  - `agent.stream(prompt, session_id)` → `AsyncIterator[str]`
-  - `agent.on(event, callback)` / `agent.off(event, callback)`
-  - `agent.checkpoint()` → `str` (opaque checkpoint ID)
-  - `Agent.restore(checkpoint_id)` → `Agent`
-  - `agent.run_sync(prompt)` — sync wrapper
-
-- **Session façade** (`openjiuwen.sdk.session`)
-  - `Session.create(title, mode)`, `Session.list()`, `Session.get(id)`, `session.delete()`
-  - `session.history()` → `list[Message]`
-  - `SessionInfo`, `Message` frozen dataclasses
-
-- **Tool decorator** (`openjiuwen.sdk.tools`)
-  - `@tool(name, description, params)` — wraps sync and async functions
-  - Type annotation inference for all JSON-schema types
-  - Optional parameters via default values
-  - Enum constraints via `ToolParam`
-  - `tool.to_tool_info()` — OpenAI-compatible function spec
-  - `tool.ainvoke(**kwargs)`, `tool.invoke_sync(**kwargs)`
-
-- **Team façade** (`openjiuwen.sdk.team`)
-  - `Team.create(agents)` → `Team`
-  - `team.spawn(prompt)` → `TeamResult`
-  - `team.send(message, to=agent_name)`
-  - `TeamResult`, `TeamStatus` frozen dataclasses
-
-- **Internal bridges** (`openjiuwen/sdk/_internal/`)
-  - `runner_bridge.py`, `session_bridge.py`, `team_bridge.py`, `sync_wrapper.py`
-  - All use module-level wrapper functions for monkeypatching in tests
-
-- **Public namespace** (`openjiuwen/sdk/__init__.py`)
-  - All public symbols re-exported; sub-module imports are not part of the stable API
-
-- **Packaging** (`pyproject.toml`)
-  - `openjiuwen-sdk` distribution; `[runtime]` extra for in-process deps
-  - `pip install openjiuwen-sdk` / `pip install openjiuwen-sdk[runtime]`
-
-- **Unit tests** — 79 tests across all façade modules, all passing
+- `JiuwenSwarmClient` — WebSocket client with typed `EventEmitter`
+- Auto-reconnect: exponential back-off 1→2→5→10→30 s, capped
+- `SessionManager` — `list()`, `create()`, `setActive()`, `refresh()`, `active`
+- Events: `connected`, `disconnected`, `token`, `done`, `error`, `reconnecting`
+- `onToolCall` — intercept and handle tool calls client-side
+- Browser, Node.js, and React Native support
+- `ws` optional peer dependency for Node.js
+- Dual CJS + ESM build with full TypeScript types
+- Published as `@jiuwenswarm/sdk` on npm

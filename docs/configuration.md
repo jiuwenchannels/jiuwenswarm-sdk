@@ -1,22 +1,35 @@
 # Configuration Reference
 
-All configuration for the SDK flows through two frozen dataclasses
-(`ModelConfig`, `RemoteConfig`) and a set of environment variables.
-Neither class takes positional arguments — use keyword arguments only.
-
 ---
 
 ## Environment variables
 
+### Python SDK
+
 | Variable | Read by | Default | Description |
 |----------|---------|---------|-------------|
-| `JIUWENSWARM_API_KEY` | `ModelConfig.from_env()` | — | Primary API key. Used for any provider. Takes precedence over provider-specific keys. |
-| `OPENAI_API_KEY` | `ModelConfig.from_env()` | — | OpenAI API key. Used when `provider="openai"` and `JIUWENSWARM_API_KEY` is not set. |
-| `ANTHROPIC_API_KEY` | `ModelConfig.from_env()` | — | Anthropic API key. Used when `provider="anthropic"` and `JIUWENSWARM_API_KEY` is not set. |
-| `JIUWENSWARM_URL` | `RemoteConfig.from_env()` | `ws://localhost:19000` | WebSocket server URL for remote mode. |
-| `JIUWENSWARM_TOKEN` | `RemoteConfig.from_env()` | — | Bearer auth token for remote WebSocket connection. |
-| `JIUWENSWARM_MODEL` | `SdkConfig.from_env()` | `gpt-4o` | Default model name when no `ModelConfig` is provided explicitly. |
-| `OPENJIUWEN_TEAM_JOIN` | MCP server (`§29`) | — | Team discovery URL used by the MCP subprocess. Example: `team://my-team@localhost:9000`. |
+| `JIUWENSWARM_API_KEY` | `ModelConfig.from_env()` | — | Primary LLM API key. Any provider. Takes precedence over provider-specific keys. |
+| `OPENAI_API_KEY` | `ModelConfig.from_env()` | — | OpenAI key. Used when `provider="openai"` and `JIUWENSWARM_API_KEY` is not set. |
+| `ANTHROPIC_API_KEY` | `ModelConfig.from_env()` | — | Anthropic key. Used when `provider="anthropic"`. |
+| `JIUWENSWARM_PROVIDER` | `ModelConfig.from_env()` | `"openai"` | Default LLM provider. |
+| `JIUWENSWARM_MODEL` | `ModelConfig.from_env()` | `"gpt-4o"` | Default model name. |
+| `JIUWENSWARM_URL` | `RemoteConfig.from_env()` | `ws://localhost:19000` | WebSocket server URL for `Agent.connect()`. |
+| `JIUWENSWARM_TOKEN` | `RemoteConfig.from_env()` | — | Bearer auth token for remote connection. |
+
+### Gateway server
+
+| Variable | Description |
+|----------|-------------|
+| `JIUWENSWARM_GATEWAY_TOKEN` | Server-side bearer token. Requests without it receive 401. Unset = auth disabled. |
+| `JIUWENSWARM_GATEWAY_HOST` | Bind address (default `0.0.0.0`). |
+| `JIUWENSWARM_GATEWAY_PORT_REST` | REST server port (default `19001`). |
+| `JIUWENSWARM_GATEWAY_PORT_WS` | WebSocket server port (default `19000`). |
+
+### MCP server
+
+| Variable | Description |
+|----------|-------------|
+| `OPENJIUWEN_TEAM_JOIN` | Team discovery URL. Example: `team://my-team@localhost:9000`. Read by `python -m openjiuwen.agent_teams.mcp`. |
 
 ---
 
@@ -35,96 +48,76 @@ class ModelConfig:
     max_tokens: int | None = None
     timeout: float = 60.0
     max_retries: int = 3
+
+    @classmethod
+    def from_env(cls) -> "ModelConfig": ...
 ```
 
-### Fields
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `provider` | `str` | `"openai"` | LLM provider. Built-in: `"openai"`, `"anthropic"`, `"siliconflow"`. Custom providers can be registered. |
-| `model` | `str` | `"gpt-4o"` | Model name as accepted by the provider's API. |
-| `api_key` | `str \| None` | `None` | API key. Falls back to env vars when `None`. |
-| `api_base` | `str \| None` | `None` | Override the base URL (useful for proxies or self-hosted models). |
-| `temperature` | `float \| None` | `None` | Sampling temperature. `None` uses the runtime default (0.95). |
-| `max_tokens` | `int \| None` | `None` | Maximum tokens to generate. `None` uses provider default. |
-| `timeout` | `float` | `60.0` | Request timeout in seconds. |
-| `max_retries` | `int` | `3` | Number of retry attempts on transient errors. |
-
-### Constructor
+| Field | Default | Description |
+|-------|---------|-------------|
+| `provider` | `"openai"` | `"openai"` \| `"anthropic"` \| `"siliconflow"` \| any registered provider |
+| `model` | `"gpt-4o"` | Model name accepted by the provider's API |
+| `api_key` | `None` | Falls back to env vars when `None` |
+| `api_base` | `None` | Override base URL — useful for proxies, Ollama, self-hosted models |
+| `temperature` | `None` | Sampling temperature. `None` = runtime default (0.95) |
+| `max_tokens` | `None` | Max tokens to generate. `None` = provider default |
+| `timeout` | `60.0` | Request timeout in seconds |
+| `max_retries` | `3` | Retry attempts on transient errors |
 
 ```python
-cfg = ModelConfig(
-    provider="anthropic",
-    model="claude-3-5-sonnet-20241022",
-    api_key="sk-ant-...",
-    temperature=0.7,
-    max_tokens=4096,
-)
+# Examples
+cfg = ModelConfig()                              # gpt-4o from OPENAI_API_KEY
+cfg = ModelConfig.from_env()                     # reads all env vars
+
+cfg = ModelConfig(provider="anthropic", model="claude-3-5-sonnet-20241022")
+cfg = ModelConfig(provider="openai", api_base="http://localhost:11434/v1",
+                  model="llama3", api_key="ollama")   # local Ollama
 ```
-
-### `from_env()` classmethod
-
-```python
-cfg = ModelConfig.from_env()
-```
-
-Reads `JIUWENSWARM_API_KEY` (or `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`),
-`JIUWENSWARM_MODEL`. All other fields use their defaults.
 
 ---
 
 ## `RemoteConfig`
 
-Controls the WebSocket connection in **remote** mode (`Agent.connect()`).
+Controls the connection in **remote** mode (`Agent.connect()`).
 
 ```python
 @dataclass(frozen=True)
 class RemoteConfig:
-    url: str = "ws://localhost:19000"
+    server_url: str = "ws://localhost:19000/v1/ws"
     auth_token: str | None = None
-    timeout: float = 30.0
+    timeout: float = 60.0
     max_retries: int = 3
+
+    @classmethod
+    def from_env(cls) -> "RemoteConfig": ...
 ```
 
-### Fields
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `url` | `str` | `"ws://localhost:19000"` | WebSocket server URL including protocol (`ws://` or `wss://`). |
-| `auth_token` | `str \| None` | `None` | Bearer token sent in the `connect` envelope. Optional in dev mode. |
-| `timeout` | `float` | `30.0` | Connection and response timeout in seconds. |
-| `max_retries` | `int` | `3` | Reconnect attempts on transient connection failures. |
-
-### Constructor
-
-```python
-cfg = RemoteConfig(
-    url="wss://my-server.example.com:19000",
-    auth_token="token-abc123",
-    timeout=60.0,
-)
-```
-
-### `from_env()` classmethod
+| Field | Default | Description |
+|-------|---------|-------------|
+| `server_url` | `ws://localhost:19000/v1/ws` | WebSocket (`ws://` \| `wss://`) or HTTP (`http://` \| `https://`) base URL |
+| `auth_token` | `None` | Bearer token. Optional in dev mode. |
+| `timeout` | `60.0` | Connection and response timeout in seconds |
+| `max_retries` | `3` | Reconnect attempts on transient failures |
 
 ```python
 cfg = RemoteConfig.from_env()
+cfg = RemoteConfig(server_url="wss://prod.example.com:19000/v1/ws", auth_token="tok")
 ```
-
-Reads `JIUWENSWARM_URL` and `JIUWENSWARM_TOKEN`.
 
 ---
 
 ## `SdkConfig`
 
-Top-level convenience config. Used when you want a single object for
-both LLM settings and remote settings.
+Top-level convenience wrapper holding both `ModelConfig` and `RemoteConfig`.
 
 ```python
 @dataclass(frozen=True)
 class SdkConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     remote: RemoteConfig = field(default_factory=RemoteConfig)
+
+    @classmethod
+    def from_env(cls) -> "SdkConfig": ...
 ```
 
 ```python
@@ -134,46 +127,125 @@ agent = await Agent.create("name", model=cfg.model)
 
 ---
 
-## Usage patterns
+## `GatewayConfig`
 
-### Minimal in-process (env vars)
+Passed to `build_gateway_app()`. All fields have env var fallbacks.
 
-```bash
+```python
+@dataclass(frozen=True)
+class GatewayConfig:
+    host: str = "0.0.0.0"
+    port_rest: int = 19001
+    port_ws: int = 19000
+    auth_token: str | None = None      # None = auth disabled
+    log_level: str = "info"
+    cors_origins: list[str] = field(default_factory=list)
+```
+
+---
+
+## TypeScript `ClientConfig`
+
+```typescript
+interface ClientConfig {
+  url: string;                          // "ws://host:19000/v1/ws"
+  authToken?: string;
+  onToken?: (text: string) => void;
+  onDone?: (sessionId: string) => void;
+  onError?: (message: string) => void;
+  onToolCall?: (call: ToolCallEnvelope) => Promise<string>;
+  reconnect?: ReconnectConfig | false;  // false = disable auto-reconnect
+}
+
+interface ReconnectConfig {
+  maxAttempts?: number;      // default: Infinity
+  initialDelayMs?: number;   // default: 1000
+  maxDelayMs?: number;       // default: 30_000
+  factor?: number;           // default: 2 (exponential)
+}
+```
+
+---
+
+## `OtelTracerConfig`
+
+```python
+@dataclass(frozen=True)
+class OtelTracerConfig:
+    service_name: str
+    endpoint: str = "http://localhost:4317"   # gRPC OTLP collector
+    insecure: bool = True
+    resource_attributes: dict[str, str] = field(default_factory=dict)
+```
+
+---
+
+## `RLConfig`
+
+```python
+@dataclass(frozen=True)
+class RLConfig:
+    algorithm: str = "ppo"          # "ppo" | "dpo" | "grpo"
+    lr: float = 1e-4
+    batch_size: int = 8
+    reward_threshold: float = 0.5
+```
+
+---
+
+## `MultiRolloutConfig`
+
+```python
+@dataclass(frozen=True)
+class MultiRolloutConfig:
+    n: int = 4                      # number of parallel rollouts
+    strategy: str = "best_of"       # "best_of" | "majority_vote"
+```
+
+---
+
+## `WorkspaceConfig`
+
+```python
+@dataclass(frozen=True)
+class WorkspaceConfig:
+    root: str | Path
+    sandbox: bool = False           # True = isolate file/shell ops to root
+```
+
+---
+
+## Common patterns
+
+```python
+# Minimal in-process (env vars only)
 export OPENAI_API_KEY=sk-...
-```
+agent = await Agent.create("my-agent")
 
-```python
-agent = await Agent.create("my-agent")  # ModelConfig.from_env() used automatically
-```
-
-### Explicit model
-
-```python
+# Explicit model
 agent = await Agent.create(
     "my-agent",
     model=ModelConfig(provider="anthropic", model="claude-3-5-sonnet-20241022"),
 )
-```
 
-### Remote connection
-
-```python
+# Remote connection
 agent = await Agent.connect(
-    "remote-agent",
-    config=RemoteConfig(url="wss://prod.example.com:19000", auth_token="tok"),
+    "wss://prod.example.com:19000/v1/ws",
+    auth_token=os.environ["JIUWENSWARM_TOKEN"],
 )
-```
 
-### Custom provider base URL (e.g. local Ollama)
+# TypeScript — minimal
+const client = new JiuwenSwarmClient({ url: "ws://localhost:19000/v1/ws" });
 
-```python
-agent = await Agent.create(
-    "local-agent",
-    model=ModelConfig(
-        provider="openai",
-        model="llama3",
-        api_base="http://localhost:11434/v1",
-        api_key="ollama",
-    ),
-)
+# TypeScript — with reconnect tuning
+const client = new JiuwenSwarmClient({
+  url: "wss://prod.example.com:19000/v1/ws",
+  authToken: process.env.JIUWENSWARM_TOKEN,
+  reconnect: { maxAttempts: 5, initialDelayMs: 2000, factor: 2 },
+});
+
+# Gateway — start with auth
+python -m openjiuwen.gateway \
+  --auth-token "$(cat /run/secrets/gateway_token)" \
+  --port-rest 19001 --port-ws 19000
 ```
