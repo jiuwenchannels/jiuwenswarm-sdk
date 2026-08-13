@@ -109,6 +109,137 @@ from openjiuwen.sdk.workflow import (
 from openjiuwen.sdk.a2a import A2AError, A2AResult, RemoteAgent
 
 # ---------------------------------------------------------------------------
+# Memory
+# ---------------------------------------------------------------------------
+
+from openjiuwen.sdk.memory import Memory, MemoryRecord, MemoryScope, make_memory
+
+# ---------------------------------------------------------------------------
+# Knowledge / RAG
+# ---------------------------------------------------------------------------
+
+from openjiuwen.sdk.knowledge import (
+    AgenticRetriever,
+    Document,
+    GraphKnowledgeBase,
+    KnowledgeBase,
+    RetrievalResult,
+    Retriever,
+)
+
+# ---------------------------------------------------------------------------
+# Evaluation
+# ---------------------------------------------------------------------------
+
+from openjiuwen.sdk.eval import (
+    EvalCase,
+    EvalResult,
+    Evaluator,
+    ExactMatchMetric,
+    HITTEvaluator,
+    HITTResult,
+    LLMAsJudgeMetric,
+    Metric,
+    MetricEvaluator,
+)
+
+# ---------------------------------------------------------------------------
+# Tracing
+# ---------------------------------------------------------------------------
+
+from openjiuwen.sdk.tracing import OtelTracer, OtelTracerConfig, get_tracer, init_otel_tracer
+
+# ---------------------------------------------------------------------------
+# Workspace
+# ---------------------------------------------------------------------------
+
+from openjiuwen.sdk.workspace import Workspace, WorkspaceConfig
+
+# ---------------------------------------------------------------------------
+# Multimodal
+# ---------------------------------------------------------------------------
+
+from openjiuwen.sdk.multimodal import (
+    Attachment,
+    AudioInput,
+    AudioModelConfig,
+    ImageInput,
+    MultimodalAgent,
+    VisionModelConfig,
+)
+
+# ---------------------------------------------------------------------------
+# Rollout
+# ---------------------------------------------------------------------------
+
+from openjiuwen.sdk.rollout import MultiRolloutConfig, MultiRolloutExecutor, RolloutResult
+
+# ---------------------------------------------------------------------------
+# Permissions
+# ---------------------------------------------------------------------------
+
+from openjiuwen.sdk.permissions import PermissionEngine, PermissionLevel, PermissionRule
+
+# ---------------------------------------------------------------------------
+# Context Engine
+# ---------------------------------------------------------------------------
+
+from openjiuwen.sdk.context import ContextEngine, ContextEngineConfig, ContextStats
+
+# ---------------------------------------------------------------------------
+# LSP Integration
+# ---------------------------------------------------------------------------
+
+from openjiuwen.sdk.lsp import (
+    LSPCompletionItem,
+    LSPDiagnostic,
+    LSPIntegration,
+    LSPPosition,
+    LSPRange,
+)
+
+# ---------------------------------------------------------------------------
+# Reinforcement Learning
+# ---------------------------------------------------------------------------
+
+from openjiuwen.sdk.rl import OfflineRL, OnlineRL, RLConfig, RLStepResult, RLTrajectory
+
+# ---------------------------------------------------------------------------
+# Builder
+# ---------------------------------------------------------------------------
+
+from openjiuwen.sdk.builder import (
+    AgentBuilder,
+    LlmAgentBuilder,
+    PromptBuilder,
+    WorkflowBuilder,
+)
+
+# ---------------------------------------------------------------------------
+# Swarm
+# ---------------------------------------------------------------------------
+
+from openjiuwen.sdk.swarm import SwarmFlow, SwarmResult
+
+# ---------------------------------------------------------------------------
+# MCP
+# ---------------------------------------------------------------------------
+
+from openjiuwen.sdk.mcp import MCPServer
+
+# ---------------------------------------------------------------------------
+# Extended Workflow types
+# ---------------------------------------------------------------------------
+
+from openjiuwen.sdk.workflow import (
+    End,
+    LLMComponent,
+    Start,
+    SubWorkflowComponent,
+    SubWorkflowNode,
+)
+
+# ---------------------------------------------------------------------------
 # Public surface
 # ---------------------------------------------------------------------------
 
@@ -135,7 +266,7 @@ __all__ = [
     "EventEmitter",
     # Hooks
     "Hooks",
-    # Workflow
+    # Workflow (core)
     "Workflow",
     "WorkflowResult",
     "WorkflowNode",
@@ -143,10 +274,87 @@ __all__ = [
     "ToolNode",
     "ConditionNode",
     "WorkflowError",
+    # Workflow (extended)
+    "SubWorkflowNode",
+    "SubWorkflowComponent",
+    "LLMComponent",
+    "Start",
+    "End",
     # A2A
     "RemoteAgent",
     "A2AResult",
     "A2AError",
+    # Memory
+    "Memory",
+    "MemoryRecord",
+    "MemoryScope",
+    "make_memory",
+    # Knowledge / RAG
+    "KnowledgeBase",
+    "Document",
+    "RetrievalResult",
+    "Retriever",
+    "AgenticRetriever",
+    "GraphKnowledgeBase",
+    # Evaluation
+    "EvalCase",
+    "EvalResult",
+    "Metric",
+    "ExactMatchMetric",
+    "LLMAsJudgeMetric",
+    "MetricEvaluator",
+    "Evaluator",
+    "HITTEvaluator",
+    "HITTResult",
+    # Tracing
+    "OtelTracer",
+    "OtelTracerConfig",
+    "init_otel_tracer",
+    "get_tracer",
+    # Workspace
+    "Workspace",
+    "WorkspaceConfig",
+    # Multimodal
+    "MultimodalAgent",
+    "ImageInput",
+    "AudioInput",
+    "VisionModelConfig",
+    "AudioModelConfig",
+    "Attachment",
+    # Rollout
+    "MultiRolloutConfig",
+    "MultiRolloutExecutor",
+    "RolloutResult",
+    # Permissions
+    "PermissionEngine",
+    "PermissionLevel",
+    "PermissionRule",
+    # Context Engine
+    "ContextEngine",
+    "ContextEngineConfig",
+    "ContextStats",
+    # LSP
+    "LSPIntegration",
+    "LSPDiagnostic",
+    "LSPCompletionItem",
+    "LSPPosition",
+    "LSPRange",
+    # RL
+    "OnlineRL",
+    "OfflineRL",
+    "RLConfig",
+    "RLTrajectory",
+    "RLStepResult",
+    # Builder
+    "AgentBuilder",
+    "LlmAgentBuilder",
+    "WorkflowBuilder",
+    "PromptBuilder",
+    # Swarm
+    "SwarmFlow",
+    "SwarmResult",
+    # MCP
+    "MCPServer",
     # Errors
     "SdkError",
     "RuntimeNotAvailableError",

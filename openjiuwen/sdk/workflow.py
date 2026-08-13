@@ -291,3 +291,88 @@ class Workflow:
 
     def __repr__(self) -> str:
         return f"Workflow(name={self._name!r}, nodes={list(self._nodes)!r})"
+
+
+# ---------------------------------------------------------------------------
+# SubWorkflowNode — embeds one Workflow inside another as a node
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SubWorkflowNode(WorkflowNode):
+    """A node that executes an entire nested :class:`Workflow`.
+
+    Use this to compose reusable workflows inside a larger pipeline.
+
+    Args:
+        workflow:       The nested :class:`Workflow` instance.
+        input_mapping:  Maps outer variable names → inner input variable names.
+        output_mapping: Maps inner output variable names → outer variable names.
+        name:           Optional display name.
+
+    Example::
+
+        inner = Workflow.create("translate", model=cfg)
+        inner.add_node("translate", LLMNode("Translate to French: {input}"))
+        outer.add_node("sub", SubWorkflowNode(workflow=inner))
+        outer.connect("fetch", "sub")
+    """
+
+    workflow: "Workflow"
+    input_mapping: dict[str, str] = field(default_factory=dict)
+    output_mapping: dict[str, str] = field(default_factory=dict)
+    name: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Higher-level component types (used by WorkflowBuilder and sub-workflow examples)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class LLMComponent(WorkflowNode):
+    """An LLM component with explicit name, prompt, and output variable.
+
+    Unlike :class:`LLMNode` (which is anonymous), ``LLMComponent`` carries a
+    ``name`` and an ``output_var`` that subsequent nodes reference.
+
+    Args:
+        name:       Unique component name.
+        prompt:     Jinja/f-string template (use ``{{var}}`` for variables).
+        output_var: Variable name for this component's output.
+        max_tokens: Token cap for this step.
+    """
+
+    name: str = "llm"
+    prompt: str = "{input}"
+    output_var: str = "output"
+    max_tokens: int | None = None
+
+    @property
+    def prompt_template(self) -> str:
+        """Alias for ``prompt`` (compatibility with :class:`LLMNode`)."""
+        return self.prompt
+
+
+@dataclass
+class SubWorkflowComponent(WorkflowNode):
+    """A sub-workflow node with explicit name and I/O mappings (used by WorkflowBuilder)."""
+
+    name: str = "sub"
+    workflow: "Workflow | None" = None
+    input_mapping: dict[str, str] = field(default_factory=dict)
+    output_mapping: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class Start(WorkflowNode):
+    """Sentinel node marking the beginning of a workflow."""
+
+    name: str = "__start__"
+
+
+@dataclass
+class End(WorkflowNode):
+    """Sentinel node marking the end of a workflow."""
+
+    name: str = "__end__"

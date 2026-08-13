@@ -99,14 +99,30 @@ def build_runtime_workflow(
 def _node_to_component(node: "WorkflowNode", model_cfg: Any) -> Any:
     """Translate an SDK WorkflowNode to a runtime component."""
     # Import here to avoid runtime dep at module load
-    from openjiuwen.sdk.workflow import ConditionNode, LLMNode, ToolNode
+    from openjiuwen.sdk.workflow import (
+        ConditionNode,
+        LLMComponent,
+        LLMNode,
+        SubWorkflowComponent,
+        SubWorkflowNode,
+        ToolNode,
+    )
 
     if isinstance(node, LLMNode):
-        from openjiuwen.core.workflow import LLMCompConfig, LLMComponent
+        from openjiuwen.core.workflow import LLMCompConfig
+        from openjiuwen.core.workflow import LLMComponent as _RtLLMComponent
 
         model = _build_workflow_model(model_cfg) if model_cfg is not None else None
         cfg = LLMCompConfig(model=model, prompt_template=node.prompt_template)
-        return LLMComponent(config=cfg)
+        return _RtLLMComponent(config=cfg)
+
+    if isinstance(node, LLMComponent):
+        from openjiuwen.core.workflow import LLMCompConfig
+        from openjiuwen.core.workflow import LLMComponent as _RtLLMComponent
+
+        model = _build_workflow_model(model_cfg) if model_cfg is not None else None
+        cfg = LLMCompConfig(model=model, prompt_template=node.prompt)
+        return _RtLLMComponent(config=cfg)
 
     if isinstance(node, ToolNode):
         from openjiuwen.core.workflow import ToolComponent, ToolComponentConfig
@@ -114,7 +130,49 @@ def _node_to_component(node: "WorkflowNode", model_cfg: Any) -> Any:
         cfg = ToolComponentConfig(tool_id=node.tool.name)
         return ToolComponent(config=cfg)
 
+    if isinstance(node, (SubWorkflowNode, SubWorkflowComponent)):
+        inner_wf = node.workflow
+        if inner_wf is None:
+            return None
+        try:
+            from openjiuwen.core.workflow import SubWorkflowComponent as _RtSubWF
+
+            inner_rt = inner_wf._compile()
+            return _RtSubWF(
+                workflow=inner_rt,
+                input_mapping=node.input_mapping,
+                output_mapping=node.output_mapping,
+            )
+        except (ImportError, Exception):  # noqa: BLE001
+            return _SubWorkflowFallback(inner_wf, node.input_mapping, node.output_mapping)
+
     return None
+
+
+class _SubWorkflowFallback:
+    """Fallback sub-workflow component used when the runtime doesn't support nesting."""
+
+    def __init__(self, workflow: Any, input_mapping: dict, output_mapping: dict) -> None:
+        self._wf = workflow
+        self._input_mapping = input_mapping
+        self._output_mapping = output_mapping
+
+    async def invoke(self, inputs: dict, session: Any = None) -> dict:
+        mapped_inputs: dict = {}
+        for outer_key, inner_key in self._input_mapping.items():
+            if outer_key in inputs:
+                mapped_inputs[inner_key] = inputs[outer_key]
+        for k, v in inputs.items():
+            if k not in self._input_mapping:
+                mapped_inputs[k] = v
+
+        result = await self._wf.run(mapped_inputs)
+
+        mapped_output: dict = dict(result.output)
+        for inner_key, outer_key in self._output_mapping.items():
+            if inner_key in result.output:
+                mapped_output[outer_key] = result.output[inner_key]
+        return mapped_output
 
 
 def _build_workflow_model(cfg: Any) -> Any:
