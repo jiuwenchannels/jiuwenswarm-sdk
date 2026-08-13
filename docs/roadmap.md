@@ -258,6 +258,23 @@ does not exist yet. Each row is one bridge + façade + unit test file.
 
 ---
 
+## Project infrastructure
+
+Non-feature tasks required before v1.0.0 ships.
+
+| Task | File | Done when |
+|---|---|---|
+| `Makefile` with `install`, `test`, `check`, `type-check`, `fix` targets | `Makefile` | All commands referenced in README work out of the box |
+| CI pipeline — Python: lint, type-check, unit tests | `.github/workflows/ci-python.yml` | Runs on every PR; fails on lint or test failure |
+| CI pipeline — TypeScript: typecheck, vitest, build | `.github/workflows/ci-typescript.yml` | Runs on every PR against `packages/sdk/` |
+| Publish pipeline — npm publish `@jiuwenswarm/sdk` on tag | `.github/workflows/publish-npm.yml` | `git tag v1.0.0 && git push --tags` triggers publish |
+| `LICENSE` file | `LICENSE` | File exists; content matches `license` field in `pyproject.toml` |
+| `.env.example` template | `.env.example` | Every env var from `docs/configuration.md` is listed with a placeholder value and one-line comment |
+| TypeScript examples runner setup | `examples/typescript/package.json`, `examples/typescript/tsconfig.json` | `npm install && npx tsx 01_connect_and_chat.ts` runs in `examples/typescript/` |
+| Clean `openjiuwen_sdk.egg-info/` from repo | — | Directory removed from git history; `*.egg-info/` confirmed in `.gitignore` |
+
+---
+
 ## Future / v2
 
 These features are intentionally deferred past v1.0.0:
