@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 if TYPE_CHECKING:
-    from openjiuwen.sdk.config import RemoteConfig
+    from openjiuwen.sdk.core.config import RemoteConfig
 
 log = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class RemoteHandle:
-    """Internal state for one remote :class:`~openjiuwen.sdk.agent.Agent`."""
+    """Internal state for one remote :class:`~openjiuwen.sdk.core.agent.Agent`."""
 
     server_url: str
     auth_token: str | None
@@ -70,7 +70,7 @@ class RemoteHandle:
         try:
             import websockets  # type: ignore[import-untyped]
         except ImportError as exc:
-            from openjiuwen.sdk.errors import ConnectionError
+            from openjiuwen.sdk.core.errors import ConnectionError
 
             raise ConnectionError(
                 "websockets package is required for remote mode.  "
@@ -90,7 +90,7 @@ class RemoteHandle:
             )
             log.debug("[sdk/remote] connected to %s", ws_url)
         except Exception as exc:
-            from openjiuwen.sdk.errors import ConnectionError
+            from openjiuwen.sdk.core.errors import ConnectionError
 
             raise ConnectionError(f"Cannot connect to {ws_url}: {exc}") from exc
 
@@ -223,7 +223,7 @@ class RemoteHandle:
 
 
 def _raise_server_error(env: dict[str, Any]) -> None:
-    from openjiuwen.sdk.errors import ServerError
+    from openjiuwen.sdk.core.errors import ServerError
 
     msg = env.get("message", env.get("error", "Unknown server error"))
     raise ServerError(msg)
@@ -254,7 +254,7 @@ async def _rest_request(
     try:
         import httpx
     except ImportError as exc:
-        from openjiuwen.sdk.errors import ConnectionError
+        from openjiuwen.sdk.core.errors import ConnectionError
 
         raise ConnectionError(
             "httpx package is required for REST calls.  Install: pip install httpx"
@@ -272,7 +272,7 @@ async def _rest_request(
         response: httpx.Response = await fn(url, **kwargs)
 
         if response.status_code >= 400:
-            from openjiuwen.sdk.errors import ServerError
+            from openjiuwen.sdk.core.errors import ServerError
 
             raise ServerError(response.text, status_code=response.status_code)
         try:

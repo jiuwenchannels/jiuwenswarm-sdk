@@ -53,5 +53,5 @@ class BaseCheckpointer(abc.ABC):
             The state dict previously passed to :meth:`save`.
 
         Raises:
-            :class:`~openjiuwen.sdk.errors.CheckpointError`: If not found.
+            :class:`~openjiuwen.sdk.core.errors.CheckpointError`: If not found.
         """

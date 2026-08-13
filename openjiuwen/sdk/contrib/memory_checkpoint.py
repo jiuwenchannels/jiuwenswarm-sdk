@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from openjiuwen.sdk.errors import CheckpointError
+from openjiuwen.sdk.core.errors import CheckpointError
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +49,7 @@ class CheckpointerBackend:
         """Return the state stored under *checkpoint_id*.
 
         Raises:
-            :class:`~openjiuwen.sdk.errors.CheckpointError`: If not found.
+            :class:`~openjiuwen.sdk.core.errors.CheckpointError`: If not found.
         """
         raise NotImplementedError
 
@@ -97,7 +97,7 @@ class InMemoryCheckpointBackend(CheckpointerBackend):
         """Return the state for *checkpoint_id*.
 
         Raises:
-            :class:`~openjiuwen.sdk.errors.CheckpointError`: If not found.
+            :class:`~openjiuwen.sdk.core.errors.CheckpointError`: If not found.
         """
         if checkpoint_id not in self._store:
             raise CheckpointError(

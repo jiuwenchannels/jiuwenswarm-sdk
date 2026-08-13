@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from openjiuwen.sdk.session import Message
+    from openjiuwen.sdk.core.session import Message
 
 
 # ---------------------------------------------------------------------------
@@ -71,10 +71,10 @@ def get_session(session_id: str) -> SessionRecord | None:
 
 
 def require_session(session_id: str) -> SessionRecord:
-    """Return the session record or raise :class:`~openjiuwen.sdk.errors.SessionError`."""
+    """Return the session record or raise :class:`~openjiuwen.sdk.core.errors.SessionError`."""
     record = _registry.get(session_id)
     if record is None:
-        from openjiuwen.sdk.errors import SessionError
+        from openjiuwen.sdk.core.errors import SessionError
 
         raise SessionError(f"Session '{session_id}' not found.")
     return record
@@ -95,7 +95,7 @@ def append_message(session_id: str, role: str, text: str) -> None:
     record = _registry.get(session_id)
     if record is None:
         return
-    from openjiuwen.sdk.session import Message  # local import to avoid circularity
+    from openjiuwen.sdk.core.session import Message  # local import to avoid circularity
 
     record.messages.append(Message(role=role, text=text))
 
@@ -109,13 +109,13 @@ def make_internal_session(record: SessionRecord) -> "Any":  # noqa: F821
     """Create the underlying ``openjiuwen.core.session.Session`` for *record*.
 
     Returns the raw internal session object.  Raises
-    :class:`~openjiuwen.sdk.errors.RuntimeNotAvailableError` if the runtime
+    :class:`~openjiuwen.sdk.core.errors.RuntimeNotAvailableError` if the runtime
     package is not installed.
     """
     try:
         from openjiuwen.core.session import create_agent_session
     except ImportError as exc:
-        from openjiuwen.sdk.errors import RuntimeNotAvailableError
+        from openjiuwen.sdk.core.errors import RuntimeNotAvailableError
 
         raise RuntimeNotAvailableError(
             "openjiuwen runtime is not installed.  "

@@ -36,7 +36,7 @@ async def start_mcp_server(server: Any, host: str, port: int) -> None:
         if hasattr(server, "start"):
             await server.start(host=host, port=port)
     except Exception as exc:  # noqa: BLE001
-        from openjiuwen.sdk.errors import SdkError
+        from openjiuwen.sdk.core.errors import SdkError
 
         raise SdkError(f"MCPServer.start failed: {exc}") from exc
 

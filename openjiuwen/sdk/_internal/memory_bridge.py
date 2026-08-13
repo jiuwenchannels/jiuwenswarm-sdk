@@ -1,7 +1,7 @@
 """In-process memory bridge.
 
 Wraps ``openjiuwen.core`` memory primitives so that the
-:class:`~openjiuwen.sdk.memory.Memory` façade can drive them through a stable
+:class:`~openjiuwen.sdk.knowledge.memory.Memory` façade can drive them through a stable
 internal API without leaking internals into the public surface.
 
 All public callables here are module-level so that tests can monkeypatch them.
@@ -41,7 +41,7 @@ def add_memory(store: Any, text: str, metadata: dict[str, Any] | None) -> str:
             return str(result.id)
         return str(result)
     except Exception as exc:  # noqa: BLE001
-        from openjiuwen.sdk.errors import SdkError
+        from openjiuwen.sdk.core.errors import SdkError
 
         raise SdkError(f"memory.add failed: {exc}") from exc
 
@@ -69,7 +69,7 @@ def search_memory(store: Any, query: str, top_k: int) -> list[dict[str, Any]]:
                 )
         return out
     except Exception as exc:  # noqa: BLE001
-        from openjiuwen.sdk.errors import SdkError
+        from openjiuwen.sdk.core.errors import SdkError
 
         raise SdkError(f"memory.search failed: {exc}") from exc
 
@@ -82,7 +82,7 @@ def clear_memory(store: Any) -> None:
     try:
         store.clear()
     except Exception as exc:  # noqa: BLE001
-        from openjiuwen.sdk.errors import SdkError
+        from openjiuwen.sdk.core.errors import SdkError
 
         raise SdkError(f"memory.clear failed: {exc}") from exc
 

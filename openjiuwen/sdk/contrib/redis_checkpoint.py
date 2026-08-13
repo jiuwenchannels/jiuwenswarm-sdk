@@ -19,7 +19,7 @@ import json
 from typing import Any
 
 from openjiuwen.sdk.contrib.memory_checkpoint import CheckpointerBackend
-from openjiuwen.sdk.errors import CheckpointError
+from openjiuwen.sdk.core.errors import CheckpointError
 
 
 class RedisCheckpointBackend(CheckpointerBackend):
@@ -87,7 +87,7 @@ class RedisCheckpointBackend(CheckpointerBackend):
         """Load *checkpoint_id* from Redis.
 
         Raises:
-            :class:`~openjiuwen.sdk.errors.CheckpointError`: If not found or corrupt.
+            :class:`~openjiuwen.sdk.core.errors.CheckpointError`: If not found or corrupt.
         """
         try:
             data = await self._client.get(self._key(checkpoint_id))

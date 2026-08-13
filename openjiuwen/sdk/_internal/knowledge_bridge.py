@@ -56,7 +56,7 @@ def add_documents(store: Any, documents: list[dict[str, Any]]) -> None:
         loop = asyncio.get_event_loop()
         loop.run_until_complete(store.add_documents(rt_docs))
     except Exception as exc:  # noqa: BLE001
-        from openjiuwen.sdk.errors import SdkError
+        from openjiuwen.sdk.core.errors import SdkError
 
         raise SdkError(f"knowledge.add_documents failed: {exc}") from exc
 
@@ -79,7 +79,7 @@ async def add_documents_async(store: Any, documents: list[dict[str, Any]]) -> No
         for doc in documents:
             store._entries.append(doc)
     except Exception as exc:  # noqa: BLE001
-        from openjiuwen.sdk.errors import SdkError
+        from openjiuwen.sdk.core.errors import SdkError
 
         raise SdkError(f"knowledge.add_documents failed: {exc}") from exc
 
@@ -106,7 +106,7 @@ async def query_knowledge_base(
                 )
         return out
     except Exception as exc:  # noqa: BLE001
-        from openjiuwen.sdk.errors import SdkError
+        from openjiuwen.sdk.core.errors import SdkError
 
         raise SdkError(f"knowledge.query failed: {exc}") from exc
 
@@ -122,7 +122,7 @@ async def add_entity(
     try:
         await store.add_entity(entity_id, text=text, links=links)
     except Exception as exc:  # noqa: BLE001
-        from openjiuwen.sdk.errors import SdkError
+        from openjiuwen.sdk.core.errors import SdkError
 
         raise SdkError(f"graph_kb.add_entity failed: {exc}") from exc
 
@@ -154,7 +154,7 @@ async def graph_query(
                 )
         return out
     except Exception as exc:  # noqa: BLE001
-        from openjiuwen.sdk.errors import SdkError
+        from openjiuwen.sdk.core.errors import SdkError
 
         raise SdkError(f"graph_kb.query failed: {exc}") from exc
 

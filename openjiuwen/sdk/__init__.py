@@ -36,8 +36,8 @@ __version__ = "0.1.0"
 # Core types
 # ---------------------------------------------------------------------------
 
-from openjiuwen.sdk.config import ModelConfig, RemoteConfig
-from openjiuwen.sdk.errors import (
+from openjiuwen.sdk.core.config import ModelConfig, RemoteConfig
+from openjiuwen.sdk.core.errors import (
     AgentError,
     AuthError,
     CheckpointError,
@@ -56,37 +56,37 @@ from openjiuwen.sdk.errors import (
 # Agent
 # ---------------------------------------------------------------------------
 
-from openjiuwen.sdk.agent import Agent, AgentResult
+from openjiuwen.sdk.core.agent import Agent, AgentResult
 
 # ---------------------------------------------------------------------------
 # Session
 # ---------------------------------------------------------------------------
 
-from openjiuwen.sdk.session import Message, Session
+from openjiuwen.sdk.core.session import Message, Session
 
 # ---------------------------------------------------------------------------
 # Team
 # ---------------------------------------------------------------------------
 
-from openjiuwen.sdk.team import Team, TeamResult
+from openjiuwen.sdk.agents.team import Team, TeamResult
 
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
 
-from openjiuwen.sdk.tools import SdkTool, ToolParam, tool
+from openjiuwen.sdk.core.tools import SdkTool, ToolParam, tool
 
 # ---------------------------------------------------------------------------
 # Events
 # ---------------------------------------------------------------------------
 
-from openjiuwen.sdk.events import EventEmitter
+from openjiuwen.sdk.core.events import EventEmitter
 
 # ---------------------------------------------------------------------------
 # Hooks
 # ---------------------------------------------------------------------------
 
-from openjiuwen.sdk.hooks import Hooks
+from openjiuwen.sdk.core.hooks import Hooks
 
 # ---------------------------------------------------------------------------
 # Workflow
@@ -106,13 +106,13 @@ from openjiuwen.sdk.workflow import (
 # A2A (agent-to-agent)
 # ---------------------------------------------------------------------------
 
-from openjiuwen.sdk.a2a import A2AError, A2AResult, RemoteAgent
+from openjiuwen.sdk.agents.a2a import A2AError, A2AResult, RemoteAgent
 
 # ---------------------------------------------------------------------------
 # Memory
 # ---------------------------------------------------------------------------
 
-from openjiuwen.sdk.memory import Memory, MemoryRecord, MemoryScope, make_memory
+from openjiuwen.sdk.knowledge.memory import Memory, MemoryRecord, MemoryScope, make_memory
 
 # ---------------------------------------------------------------------------
 # Knowledge / RAG
@@ -131,7 +131,7 @@ from openjiuwen.sdk.knowledge import (
 # Evaluation
 # ---------------------------------------------------------------------------
 
-from openjiuwen.sdk.eval import (
+from openjiuwen.sdk.optimize.eval import (
     EvalCase,
     EvalResult,
     Evaluator,
@@ -147,13 +147,13 @@ from openjiuwen.sdk.eval import (
 # Tracing
 # ---------------------------------------------------------------------------
 
-from openjiuwen.sdk.tracing import OtelTracer, OtelTracerConfig, get_tracer, init_otel_tracer
+from openjiuwen.sdk.observe.tracing import OtelTracer, OtelTracerConfig, get_tracer, init_otel_tracer
 
 # ---------------------------------------------------------------------------
 # Workspace
 # ---------------------------------------------------------------------------
 
-from openjiuwen.sdk.workspace import Workspace, WorkspaceConfig
+from openjiuwen.sdk.infra.workspace import Workspace, WorkspaceConfig
 
 # ---------------------------------------------------------------------------
 # Multimodal
@@ -172,25 +172,25 @@ from openjiuwen.sdk.multimodal import (
 # Rollout
 # ---------------------------------------------------------------------------
 
-from openjiuwen.sdk.rollout import MultiRolloutConfig, MultiRolloutExecutor, RolloutResult
+from openjiuwen.sdk.optimize.rollout import MultiRolloutConfig, MultiRolloutExecutor, RolloutResult
 
 # ---------------------------------------------------------------------------
 # Permissions
 # ---------------------------------------------------------------------------
 
-from openjiuwen.sdk.permissions import PermissionEngine, PermissionLevel, PermissionRule
+from openjiuwen.sdk.control.permissions import PermissionEngine, PermissionLevel, PermissionRule
 
 # ---------------------------------------------------------------------------
 # Context Engine
 # ---------------------------------------------------------------------------
 
-from openjiuwen.sdk.context import ContextEngine, ContextEngineConfig, ContextStats
+from openjiuwen.sdk.control.context import ContextEngine, ContextEngineConfig, ContextStats
 
 # ---------------------------------------------------------------------------
 # LSP Integration
 # ---------------------------------------------------------------------------
 
-from openjiuwen.sdk.lsp import (
+from openjiuwen.sdk.infra.lsp import (
     LSPCompletionItem,
     LSPDiagnostic,
     LSPIntegration,
@@ -202,13 +202,13 @@ from openjiuwen.sdk.lsp import (
 # Reinforcement Learning
 # ---------------------------------------------------------------------------
 
-from openjiuwen.sdk.rl import OfflineRL, OnlineRL, RLConfig, RLStepResult, RLTrajectory
+from openjiuwen.sdk.optimize.rl import OfflineRL, OnlineRL, RLConfig, RLStepResult, RLTrajectory
 
 # ---------------------------------------------------------------------------
 # Builder
 # ---------------------------------------------------------------------------
 
-from openjiuwen.sdk.builder import (
+from openjiuwen.sdk.build.builder import (
     AgentBuilder,
     LlmAgentBuilder,
     PromptBuilder,
@@ -219,13 +219,13 @@ from openjiuwen.sdk.builder import (
 # Swarm
 # ---------------------------------------------------------------------------
 
-from openjiuwen.sdk.swarm import SwarmFlow, SwarmResult
+from openjiuwen.sdk.agents.swarm import SwarmFlow, SwarmResult
 
 # ---------------------------------------------------------------------------
 # MCP
 # ---------------------------------------------------------------------------
 
-from openjiuwen.sdk.mcp import MCPServer
+from openjiuwen.sdk.infra.mcp import MCPServer
 
 # ---------------------------------------------------------------------------
 # Extended Workflow types

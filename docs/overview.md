@@ -588,38 +588,47 @@ Runs in browser, Node.js, and React Native.
 ```
 openjiuwen/
 ├── sdk/                          Python SDK
-│   ├── __init__.py               all public exports
-│   ├── agent.py                  Agent façade
-│   ├── session.py                Session façade
-│   ├── tools.py                  @tool, SdkTool, ToolParam
-│   ├── workflow.py               Workflow DAG, LLMNode, ToolNode, ConditionNode,
+│   ├── __init__.py               all public exports (stable surface)
+│   ├── core/                     Agent, config, errors, events, hooks, session, tools
+│   │   ├── agent.py              Agent façade, AgentResult
+│   │   ├── config.py             ModelConfig, RemoteConfig
+│   │   ├── errors.py             SdkError hierarchy (10+ error types)
+│   │   ├── events.py             EventEmitter
+│   │   ├── hooks.py              Hooks lifecycle container
+│   │   ├── session.py            Session, Message
+│   │   └── tools.py              @tool, SdkTool, ToolParam
+│   ├── agents/                   Multi-agent collaboration primitives
+│   │   ├── team.py               Team, TeamResult
+│   │   ├── a2a.py                RemoteAgent (A2A client)
+│   │   ├── swarm.py              SwarmFlow, SwarmResult (OOP interface)
+│   │   └── swarmflow.py          parallel, pipeline, phase, run_swarmflow (functional)
+│   ├── workflow/                 DAG-based workflow engine
+│   │   └── workflow.py           Workflow, LLMNode, ToolNode, ConditionNode,
 │   │                             SubWorkflowNode, LLMComponent, Start, End
-│   ├── a2a.py                    RemoteAgent (A2A client)
-│   ├── hooks.py                  Hooks lifecycle container
-│   ├── events.py                 EventEmitter
-│   ├── team.py                   Team, TeamSpec
-│   ├── config.py                 ModelConfig, RemoteConfig, SdkConfig
-│   ├── errors.py                 SdkError hierarchy
-│   ├── memory.py                 MemoryScope, Memory, MemoryRecord, make_memory
-│   ├── knowledge.py              KnowledgeBase, Document, Retriever,
+│   ├── knowledge/                Memory and RAG knowledge bases
+│   │   ├── memory.py             Memory, MemoryRecord, MemoryScope, make_memory
+│   │   └── knowledge.py          KnowledgeBase, Document, Retriever,
 │   │                             AgenticRetriever, GraphKnowledgeBase, RetrievalResult
-│   ├── workspace.py              Workspace, WorkspaceConfig
-│   ├── multimodal.py             MultimodalAgent, ImageInput, AudioInput,
+│   ├── multimodal/               Multimodal input/output
+│   │   └── multimodal.py         MultimodalAgent, ImageInput, AudioInput,
 │   │                             VisionModelConfig, AudioModelConfig, Attachment
-│   ├── rollout.py                MultiRolloutExecutor, MultiRolloutConfig, RolloutResult
-│   ├── eval.py                   EvalCase, EvalResult, Metric, ExactMatchMetric,
-│   │                             LLMAsJudgeMetric, MetricEvaluator, HITTEvaluator
-│   ├── evaluation.py             re-exports everything from eval.py
-│   ├── tracing.py                OtelTracer, OtelTracerConfig, init_otel_tracer, get_tracer
-│   ├── context.py                ContextEngine, ContextEngineConfig, ContextStats
-│   ├── permissions.py            PermissionEngine, PermissionLevel, PermissionRule
-│   ├── lsp.py                    LSPIntegration, LSPDiagnostic, LSPCompletionItem
-│   ├── rl.py                     OnlineRL, OfflineRL, RLConfig, RLTrajectory
-│   ├── builder.py                AgentBuilder, LlmAgentBuilder, WorkflowBuilder,
-│   │                             PromptBuilder
-│   ├── swarm.py                  SwarmFlow, SwarmResult (OOP interface)
-│   ├── swarmflow.py              parallel, pipeline, phase, run_swarmflow (functional)
-│   ├── mcp.py                    MCPServer façade
+│   ├── infra/                    Developer infrastructure
+│   │   ├── workspace.py          Workspace, WorkspaceConfig
+│   │   ├── lsp.py                LSPIntegration, LSPDiagnostic, LSPCompletionItem
+│   │   └── mcp.py                MCPServer façade
+│   ├── control/                  Safety and context management
+│   │   ├── permissions.py        PermissionEngine, PermissionLevel, PermissionRule
+│   │   └── context.py            ContextEngine, ContextEngineConfig, ContextStats
+│   ├── optimize/                 RL training and evaluation
+│   │   ├── rl.py                 OnlineRL, OfflineRL, RLConfig, RLTrajectory
+│   │   ├── rollout.py            MultiRolloutExecutor, MultiRolloutConfig, RolloutResult
+│   │   ├── eval.py               EvalCase, EvalResult, Metric, ExactMatchMetric,
+│   │   │                         LLMAsJudgeMetric, MetricEvaluator, HITTEvaluator
+│   │   └── evaluation.py         re-exports everything from eval.py
+│   ├── observe/                  Observability
+│   │   └── tracing.py            OtelTracer, OtelTracerConfig, init_otel_tracer, get_tracer
+│   ├── build/                    Fluent builder API
+│   │   └── builder.py            AgentBuilder, LlmAgentBuilder, WorkflowBuilder, PromptBuilder
 │   ├── contrib/
 │   │   ├── memory_checkpoint.py  InMemoryCheckpointBackend
 │   │   └── redis_checkpoint.py   RedisCheckpointBackend (optional; requires redis-py)

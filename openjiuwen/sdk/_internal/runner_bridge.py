@@ -1,13 +1,13 @@
 """In-process runner bridge.
 
 Wraps the ``openjiuwen.harness`` / ``openjiuwen.core`` runtime so that the
-:class:`~openjiuwen.sdk.agent.Agent` façade can drive it through a stable
+:class:`~openjiuwen.sdk.core.agent.Agent` façade can drive it through a stable
 internal API without leaking internals into the public surface.
 
 Key responsibilities
 --------------------
 * Lazily start a process-global ``Runner`` on first use.
-* Translate :class:`~openjiuwen.sdk.config.ModelConfig` → runtime ``Model``.
+* Translate :class:`~openjiuwen.sdk.core.config.ModelConfig` → runtime ``Model``.
 * Build a ``DeepAgent`` via the harness factory.
 * Drive non-streaming and streaming invocations.
 * Extract plain text from whatever the runtime returns.
@@ -26,8 +26,8 @@ from typing import TYPE_CHECKING, Any, AsyncIterator
 from openjiuwen.sdk._internal import session_bridge as _sb
 
 if TYPE_CHECKING:
-    from openjiuwen.sdk.config import ModelConfig
-    from openjiuwen.sdk.tools import SdkTool
+    from openjiuwen.sdk.core.config import ModelConfig
+    from openjiuwen.sdk.core.tools import SdkTool
 
 log = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ def _require_runtime() -> None:
     try:
         import openjiuwen.core  # noqa: F401
     except ImportError as exc:
-        from openjiuwen.sdk.errors import RuntimeNotAvailableError
+        from openjiuwen.sdk.core.errors import RuntimeNotAvailableError
 
         raise RuntimeNotAvailableError(_RUNTIME_MISSING_MSG) from exc
 
@@ -198,7 +198,7 @@ def _extract_token(chunk: Any) -> str | None:
 
 @dataclass
 class AgentHandle:
-    """Internal state for one in-process :class:`~openjiuwen.sdk.agent.Agent`."""
+    """Internal state for one in-process :class:`~openjiuwen.sdk.core.agent.Agent`."""
 
     name: str
     model_cfg: "ModelConfig"
@@ -269,7 +269,7 @@ class AgentHandle:
         if session_id is not None:
             record = _sb.get_session(session_id)
             if record is None:
-                from openjiuwen.sdk.errors import SessionError
+                from openjiuwen.sdk.core.errors import SessionError
 
                 raise SessionError(f"Session '{session_id}' not found.")
         else:
@@ -281,7 +281,7 @@ class AgentHandle:
         try:
             result = await agent.invoke({"query": prompt}, agent_session=internal_sess)
         except Exception as exc:
-            from openjiuwen.sdk.errors import AgentError
+            from openjiuwen.sdk.core.errors import AgentError
 
             raise AgentError(f"Agent '{self.name}' failed: {exc}") from exc
         finally:
@@ -305,7 +305,7 @@ class AgentHandle:
         if session_id is not None:
             record = _sb.get_session(session_id)
             if record is None:
-                from openjiuwen.sdk.errors import SessionError
+                from openjiuwen.sdk.core.errors import SessionError
 
                 raise SessionError(f"Session '{session_id}' not found.")
         else:
@@ -322,7 +322,7 @@ class AgentHandle:
                     collected.append(token)
                     yield token
         except Exception as exc:
-            from openjiuwen.sdk.errors import StreamError
+            from openjiuwen.sdk.core.errors import StreamError
 
             raise StreamError(f"Streaming agent '{self.name}' failed: {exc}") from exc
         finally:
