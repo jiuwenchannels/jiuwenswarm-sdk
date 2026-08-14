@@ -16,16 +16,285 @@ Features planned *beyond* v1.0.0 are collected at the bottom under
 
 ## v2 Roadmap
 
-Phases are ordered by dependency: each phase unblocks the next.
-Phases A and B are independent of each other and can run in parallel.
-Phases C–F must be sequential. Phase G can start once Phase B is stable.
+Phases 1–15 are new work identified from jiuwenswarm, agent-core, and IDE gap analysis.
+They are ordered by dependency and value; each is deliberately small-to-medium.
+Phases 1–5 are independent of each other and can run in parallel.
+Phases 6–7 can run in parallel. Phase 11 requires Phase 1. Phase 12 requires Phase 11.
+Phases A–G (existing) follow after all numbered phases are complete.
+
+---
+
+## Phase 1 — E2A Protocol, Stream Control, and Usage Events
+
+Covers the gap between the legacy gateway envelope format and the newer E2A format
+already used by jiuwenswarm-ide and jiuwenswarm-jupyterlab.
+Unlocks Phase 11 (TypeScript typed events).
+
+### E2A envelope parser
+
+| Task | File | Done when |
+|---|---|---|
+| `parse_e2a_envelope(env: dict) -> StreamEvent \| None` — handles `response_kind: "e2a.chunk/complete/error"` with `body.event_type` dispatching | `openjiuwen/sdk/core/stream.py` | All E2A chunk types (delta, reasoning, status, tool_call, tool_result, team.\*, done, error) map to the existing `StreamEvent` subclasses; returns `None` for ack/housekeeping |
+| Export `parse_e2a_envelope` from `openjiuwen.sdk` and `openjiuwen.sdk.core` | `openjiuwen/sdk/__init__.py`, `openjiuwen/sdk/core/__init__.py` | `from openjiuwen.sdk import parse_e2a_envelope` works |
+| Unit tests | `tests/unit/sdk/test_e2a_envelope.py` | All `response_kind` variants; `member_name` forwarded to `TeamEvent.agent_name`; unknown `response_kind` returns `None` |
+
+### Usage events
+
+| Task | File | Done when |
+|---|---|---|
+| `UsageEvent(StreamEvent)` dataclass: `input_tokens: int`, `output_tokens: int`, `cost_usd: float \| None` | `openjiuwen/sdk/core/stream.py` | Exported from `openjiuwen.sdk`; `type = "usage"` |
+| `parse_e2a_envelope` maps `chat.usage_summary` / `chat.usage_metadata` payloads to `UsageEvent` | `openjiuwen/sdk/core/stream.py` | Both E2A and legacy `usage_summary` event types produce `UsageEvent` |
+| `agent.on("usage", cb)` emitted by `stream_events()` whenever a `UsageEvent` is received | `openjiuwen/sdk/core/agent.py` | Callback receives `(input_tokens, output_tokens, cost_usd)` |
+| Unit tests | `tests/unit/sdk/test_e2a_envelope.py` | `UsageEvent` fields correct; `on("usage")` fires |
+
+### Stream interrupt and bidirectional answer
+
+| Task | File | Done when |
+|---|---|---|
+| `AgentHandle.interrupt(session_id)` → sends `chat.interrupt` envelope to gateway | `openjiuwen/sdk/_internal/remote_bridge.py` | Fire-and-forget; no response awaited; no-op in in-process mode |
+| `Agent.interrupt(session_id=None)` public method | `openjiuwen/sdk/core/agent.py` | `await agent.interrupt()` stops the current stream on the server |
+| `Agent.answer(request_id, answers)` public method → sends `chat.answer` envelope | `openjiuwen/sdk/core/agent.py` | Enables bidirectional HITL: server sends `confirm_interrupt`, client replies |
+| `connection.ack` handler in `_RemoteBridge.connect()` — stores server-assigned `session_id` | `openjiuwen/sdk/_internal/remote_bridge.py` | `agent.session_id` property available after `Agent.connect()` |
+| Unit tests | `tests/unit/sdk/test_stream_control.py` | `interrupt()` sends correct envelope; `answer()` sends correct envelope; ack sets `session_id` |
+| Docs | `docs/api-reference.md` | `Agent.interrupt()`, `Agent.answer()`, `UsageEvent`, `parse_e2a_envelope` documented |
+| Example | `examples/python/33_interrupt_and_resume.py` | Shows: stream → interrupt mid-stream; then bidirectional confirm_interrupt → answer flow |
+
+---
+
+## Phase 2 — Skill Management API
+
+Exposes `skills.list` and `skills.toggle` gateway methods that jiuwenswarm-ide
+uses but are currently invisible to SDK users.
+
+| Task | File | Done when |
+|---|---|---|
+| `Skill` dataclass: `skill_id: str`, `name: str`, `description: str`, `enabled: bool`, `trigger: str \| None` | `openjiuwen/sdk/core/skills.py` | New file; exported from `openjiuwen.sdk` |
+| `AgentHandle.list_skills()` → sends `skills.list` envelope; returns `list[Skill]` | `openjiuwen/sdk/_internal/remote_bridge.py` | Works in remote mode; raises `RuntimeNotAvailableError` in in-process mode |
+| `AgentHandle.toggle_skill(skill_id, enabled)` → sends `skills.toggle` | `openjiuwen/sdk/_internal/remote_bridge.py` | Returns updated `Skill` |
+| `Agent.list_skills()` and `Agent.toggle_skill(skill_id, enabled)` public methods | `openjiuwen/sdk/core/agent.py` | `await agent.list_skills()` returns `list[Skill]` |
+| Unit tests | `tests/unit/sdk/test_skills.py` | List parses response correctly; toggle returns updated skill; in-process mode raises |
+| Docs | `docs/api-reference.md` | `Skill` dataclass, `Agent.list_skills()`, `Agent.toggle_skill()` documented |
+| Example | `examples/python/34_skill_management.py` | Lists skills, disables one, re-enables; shows TypeScript equivalent snippet in comments |
+
+---
+
+## Phase 3 — Pre-built Tools: Web and Shell
+
+Exposes the web and shell tools already implemented in `openjiuwen.harness.tools`
+so SDK users don't have to rewrite them from scratch.
+
+| Task | File | Done when |
+|---|---|---|
+| `WebFetchTool` — fetches a URL and returns cleaned markdown text; `@tool`-compatible | `openjiuwen/sdk/tools/web.py` | `url: str, timeout_s: float = 30.0` param; strips scripts/styles; returns text |
+| `WebSearchTool(provider="free")` — free and paid search variants; returns list of `SearchResult(url, title, snippet)` | `openjiuwen/sdk/tools/web.py` | Provider selectable via param; results capped at `max_results` |
+| `BashTool` — runs a shell command in a subprocess; returns stdout+stderr; timeout enforced | `openjiuwen/sdk/tools/shell.py` | `command: str, timeout_s: float = 30.0`; raises `ToolError` on timeout |
+| `AskUserTool` — suspends agent and prompts user for input via `confirm_interrupt` mechanism | `openjiuwen/sdk/tools/interaction.py` | `question: str`; integrates with `Agent.answer()` from Phase 1 |
+| `openjiuwen.sdk.tools` package `__init__.py` — re-exports all built-in tools | `openjiuwen/sdk/tools/__init__.py` | `from openjiuwen.sdk.tools import WebFetchTool, BashTool, AskUserTool` |
+| Export from `openjiuwen.sdk` top-level | `openjiuwen/sdk/__init__.py` | All tools importable from root |
+| Unit tests | `tests/unit/sdk/test_tools_web.py`, `test_tools_shell.py` | Fetch mock URL; search returns results; bash runs command; timeout kills process |
+| Docs | `docs/api-reference.md` | New `## Built-in Tools` section with table of all tools |
+| Example | `examples/python/35_builtin_tools.py` | Agent with `WebFetchTool` + `BashTool`; shows one-liner tool attachment |
+
+---
+
+## Phase 4 — Pre-built Tools: File System and Productivity
+
+| Task | File | Done when |
+|---|---|---|
+| `ListDirTool` — lists directory contents with optional depth; `GlobTool` — finds files by pattern | `openjiuwen/sdk/tools/fs.py` | `path: str, depth: int = 1`; returns JSON list of entries with type/size |
+| `TodoCreateTool`, `TodoListTool`, `TodoModifyTool` — in-session task tracking | `openjiuwen/sdk/tools/todo.py` | Stored in session metadata; survives across turns |
+| `SendFileTool` — marks a file as a deliverable; returns download URL or path | `openjiuwen/sdk/tools/fs.py` | `file_path: str, display_name: str \| None`; raises `ToolError` if file does not exist |
+| `SubagentSpawnTool`, `SubagentListTool`, `SubagentCancelTool` — launch and manage sub-agents | `openjiuwen/sdk/tools/subagent.py` | Spawn returns a `SubagentHandle` with `session_id`; integrates with `Session` |
+| Add all tools to `openjiuwen.sdk.tools` exports | `openjiuwen/sdk/tools/__init__.py` | Single import point |
+| Unit tests | `tests/unit/sdk/test_tools_fs.py`, `test_tools_todo.py` | Dir listing; glob patterns; todo CRUD; subagent spawn mocked |
+| Example | `examples/python/36_filesystem_tools.py` | Agent that lists a directory, creates todos, spawns a subagent |
+
+---
+
+## Phase 5 — Pre-built Tools: Multimodal
+
+| Task | File | Done when |
+|---|---|---|
+| `ImageOCRTool` — extracts text from an image file or URL | `openjiuwen/sdk/tools/multimodal.py` | `image: str` (path or URL); returns extracted text string |
+| `VisualQuestionAnsweringTool` — answers a natural-language question about an image | `openjiuwen/sdk/tools/multimodal.py` | `image: str, question: str`; delegates to configured vision model |
+| `AudioTranscriptionTool` — transcribes audio to text | `openjiuwen/sdk/tools/multimodal.py` | `audio: str` (path or URL); uses configured speech model |
+| `AudioQuestionAnsweringTool` — answers a question about audio content | `openjiuwen/sdk/tools/multimodal.py` | `audio: str, question: str` |
+| Factory helpers: `create_vision_tools()`, `create_audio_tools()` — return pre-configured lists | `openjiuwen/sdk/tools/multimodal.py` | Shortcut for `Agent.create(tools=create_vision_tools())` |
+| Unit tests (mock model responses) | `tests/unit/sdk/test_tools_multimodal.py` | Each tool with mocked model call; factory lists contain correct tools |
+| Docs + example | `docs/api-reference.md`, `examples/python/37_multimodal_tools.py` | Documented in Built-in Tools section; example shows image + audio pipeline |
+
+---
+
+## Phase 6 — Advanced Retrieval and Chunking
+
+Exposes `HybridRetriever`, rerankers, and chunking strategies from
+`openjiuwen.core.retrieval` that the basic SDK RAG does not reach.
+
+| Task | File | Done when |
+|---|---|---|
+| `HybridRetriever(kb, bm25_weight=0.3)` — combines vector and BM25 sparse retrieval with RRF fusion | `openjiuwen/sdk/knowledge/retrieval.py` | Extends `Retriever` protocol; `retrieve(query, top_k)` returns fused `RetrievalResult` list |
+| `ChatReranker` and `StandardReranker` — re-rank candidates using LLM or cross-encoder model | `openjiuwen/sdk/knowledge/retrieval.py` | `rerank(query, results)` returns sorted `RetrievalResult` list |
+| `QueryRewriter` — transforms user query before retrieval (HyDE, step-back, etc.) | `openjiuwen/sdk/knowledge/retrieval.py` | `rewrite(query, strategy="hyde")` returns transformed query string |
+| `HybridChunker(chunk_size, overlap)`, `TokenizerChunker(model)` | `openjiuwen/sdk/knowledge/chunking.py` | Implement `Chunker` protocol; usable in `KnowledgeBase.add_documents(chunker=...)` |
+| `PreprocessingPipeline([URLEmailRemover(), WhitespaceNormalizer(), ...])` | `openjiuwen/sdk/knowledge/chunking.py` | Composable text preprocessors; applied before chunking |
+| Export from `openjiuwen.sdk` and `openjiuwen.sdk.knowledge` | `__init__.py` files | All new classes importable |
+| Unit tests | `tests/unit/sdk/test_hybrid_retrieval.py`, `test_chunking.py` | Hybrid fusion correct; reranker sorts by score; pipeline applies normalizers in order |
+| Docs + example | `docs/api-reference.md`, `examples/python/38_hybrid_retrieval.py` | New retrieval section; example with HybridRetriever + ChatReranker |
+
+---
+
+## Phase 7 — Advanced Memory Types
+
+Bridges the gap between the basic `add/search/clear` memory interface and the
+richer memory modes in `openjiuwen.core.memory`.
+
+| Task | File | Done when |
+|---|---|---|
+| `TripleMemory` — knowledge-graph-style memory: `add_triple(subject, predicate, object)`, `query_triples(subject)` | `openjiuwen/sdk/knowledge/memory.py` | Extends `Memory` base; stores and retrieves SPO triples |
+| `TeamMemory(scope="team")` — shared memory readable/writable by all members of a team | `openjiuwen/sdk/knowledge/memory.py` | Passed to `Team.create(shared_memory=...)` |
+| `DreamingMemory` — replays past sessions to synthesize new memory entries (background task) | `openjiuwen/sdk/knowledge/memory.py` | `await DreamingMemory.consolidate(sessions)` |
+| `ExternalMemoryConfig(provider_url, auth_token)` — pluggable external memory backend | `openjiuwen/sdk/knowledge/memory.py` | Passed to `make_memory(external=ExternalMemoryConfig(...))` |
+| `MemoryEngineConfig` — unified config for memory backend, search mode, token budget | `openjiuwen/sdk/knowledge/memory.py` | Fields: `backend`, `search_mode: "vector" \| "bm25" \| "hybrid"`, `max_tokens` |
+| Unit tests | `tests/unit/sdk/test_advanced_memory.py` | Triple add/query round-trip; team memory shared across agent handles; dreaming mock |
+| Docs + example | `docs/api-reference.md`, `examples/python/39_advanced_memory.py` | TripleMemory usage; team memory in multi-agent context |
+
+---
+
+## Phase 8 — Context Engine Processors
+
+Exposes the concrete processor implementations so developers can build custom
+context compression strategies rather than just using the defaults.
+
+| Task | File | Done when |
+|---|---|---|
+| `MessageSummaryOffloader(threshold_tokens, summary_model)` — summarizes old messages when context exceeds threshold | `openjiuwen/sdk/control/context.py` | Implements `ContextProcessor` protocol; `process(messages, token_count)` returns trimmed list |
+| `DialogueCompressor`, `FullCompactProcessor` — aggressive compression modes | `openjiuwen/sdk/control/context.py` | `CompactionMode.DIALOGUE` (per-turn summary) and `FULL` (entire context → one summary) |
+| `ToolResultBudgetProcessor(max_tokens_per_result)` — truncates oversized tool outputs | `openjiuwen/sdk/control/context.py` | Truncates `tool_result` messages that exceed budget; appends `[truncated]` marker |
+| `TokenCounter` — standalone token counting utility; model-aware | `openjiuwen/sdk/control/context.py` | `count(text, model="gpt-4o")` returns int; exported from `openjiuwen.sdk` |
+| `ContextEngine.compose([proc1, proc2, ...])` class method — builds pipeline from list | `openjiuwen/sdk/control/context.py` | Simplifies multi-processor chains |
+| Unit tests | `tests/unit/sdk/test_context_processors.py` | Each processor reduces token count correctly; truncation adds marker; `TokenCounter` matches tiktoken |
+| Docs + example | `docs/api-reference.md`, `examples/python/40_context_processors.py` | Updated Context Engine section; example with custom compression pipeline |
+
+---
+
+## Phase 9 — Full Team Coordination API
+
+Extends `Team` beyond basic `spawn()` and `stream()` to expose declarative
+team specs, supervisor streams, and external team integration.
+
+| Task | File | Done when |
+|---|---|---|
+| `TeamMemberSpec(name, role, system_prompt, tools, model)` — declarative member definition | `openjiuwen/sdk/agents/team.py` | Dataclass; used in `TeamSpec` |
+| `TeamSpec(name, members, leader_model, mode)` — full team definition; passed to `Team.from_spec()` | `openjiuwen/sdk/agents/team.py` | `Team.from_spec(spec)` async class method creates the team |
+| `team.subscribe(role="godview")` — returns `AsyncIterator[StreamEvent]` with all member outputs visible | `openjiuwen/sdk/agents/team.py` | GodView stream includes `TeamEvent` for every member; useful for monitoring dashboards |
+| `team.cancel()` — coordinated cancellation across all running members | `openjiuwen/sdk/agents/team.py` | Sends `chat.interrupt` to all active member sessions; waits for clean shutdown |
+| `ExternalTeamClient(server_url, team_name)` — connects to a team running in a remote gateway | `openjiuwen/sdk/agents/team.py` | `await ExternalTeamClient.connect(...)` returns a `Team`-compatible handle |
+| Unit tests | `tests/unit/sdk/test_team_coordination.py` | `from_spec()` builds team with correct members; `cancel()` interrupts all; `subscribe()` yields all events |
+| Docs + example | `docs/api-reference.md`, `examples/python/41_team_spec.py` | Updated Team section with `TeamSpec`; example with declarative spec + godview stream |
+
+---
+
+## Phase 10 — Agent Training Framework
+
+Thin façade over `openjiuwen.agent_evolving` to expose prompt optimization,
+signal detection, and training loops to SDK users.
+
+| Task | File | Done when |
+|---|---|---|
+| `TrainingCase(prompt, expected_output, metadata)` and `TrainingDataset(cases)` | `openjiuwen/sdk/optimize/training.py` | Dataclasses; `TrainingDataset.from_jsonl(path)` loader |
+| `InstructionOptimizer(agent, metric, n_iterations)` — improves agent's system prompt by running eval on `TrainingDataset` | `openjiuwen/sdk/optimize/training.py` | `.optimize(dataset)` returns `OptimizationResult(best_prompt, score_history)` |
+| `ConversationSignalDetector` — detects implicit feedback signals in conversation history (corrections, praise, repetition) | `openjiuwen/sdk/optimize/training.py` | `.detect(session)` returns `list[EvolutionSignal(category, target, strength)]` |
+| `SkillExperienceOptimizer(skill_path)` — improves a skill by replaying failures | `openjiuwen/sdk/optimize/training.py` | `.optimize(failure_log)` rewrites skill based on observed errors |
+| Export from `openjiuwen.sdk` | `openjiuwen/sdk/__init__.py` | All training types importable from root |
+| Unit tests (mock LLM calls) | `tests/unit/sdk/test_training.py` | Optimizer runs N iterations; signal detector identifies correction patterns; dataset loads from JSONL |
+| Docs + example | `docs/api-reference.md`, `examples/python/42_training.py` | New `## Agent Training` section; example with `InstructionOptimizer` + eval metric |
+
+---
+
+## Phase 11 — TypeScript SDK: Typed Stream Events
+
+Mirrors Phase 1's `StreamEvent` hierarchy in TypeScript so browser and Node
+clients get the same typed observability as Python users.
+Requires Phase 1 (E2A parser contract and event types must be stable).
+
+| Task | File | Done when |
+|---|---|---|
+| `StreamEvent` discriminated union type + all subtypes: `DeltaEvent`, `ReasoningEvent`, `StatusEvent`, `ToolCallEvent`, `ToolResultEvent`, `TeamEvent`, `UsageEvent`, `DoneEvent`, `ErrorEvent` | `packages/sdk/src/protocol/events.ts` | Fully typed; `event.type` narrows the union |
+| `parseStreamEvent(envelope: Record<string, unknown>): StreamEvent \| null` — handles both legacy and E2A format | `packages/sdk/src/protocol/events.ts` | Same dispatch logic as Python `parse_e2a_envelope` + `parse_gateway_envelope` |
+| `client.streamEvents(prompt, options?): AsyncIterable<StreamEvent>` | `packages/sdk/src/client/JiuwenSwarmClient.ts` | Wraps existing `stream()` and applies `parseStreamEvent` to each envelope |
+| `client.interrupt()` — sends `chat.interrupt` envelope | `packages/sdk/src/client/JiuwenSwarmClient.ts` | Fire-and-forget; resolves immediately |
+| Unit tests | `packages/sdk/tests/stream_events.test.ts` | Each event type parsed correctly; `interrupt()` sends correct payload |
+| TypeScript example | `examples/typescript/07_stream_events.ts` | Shows `switch(event.type)` pattern mirroring the Python §31 example |
+
+---
+
+## Phase 12 — TypeScript SDK: Team Events, Skills, and HITL
+
+Requires Phase 11 (typed events must exist before team events can be typed).
+
+| Task | File | Done when |
+|---|---|---|
+| `TeamEvent` subtypes with team-specific `type` values: `"team.member.spawned"`, `"team.member.status_changed"`, `"team.task.created"`, `"team.task.completed"`, `"team.handoff"` | `packages/sdk/src/protocol/events.ts` | All values from IDE's `SwarmStateManager` covered |
+| `SwarmStateManager` class — tracks live team state from a `streamEvents()` feed | `packages/sdk/src/swarm/SwarmStateManager.ts` | `members: Map<string, MemberState>`, `tasks: Map<string, TaskState>`; emits `"member_update"` / `"task_update"` events |
+| `client.listSkills(): Promise<Skill[]>`, `client.toggleSkill(id, enabled): Promise<Skill>` | `packages/sdk/src/client/JiuwenSwarmClient.ts` | Mirrors Python Phase 2 |
+| `client.sendAnswer(requestId, answers): Promise<void>` — HITL reply to `confirm_interrupt` | `packages/sdk/src/client/JiuwenSwarmClient.ts` | Used when server suspends for human confirmation |
+| Unit tests | `packages/sdk/tests/team_events.test.ts`, `skills.test.ts` | `SwarmStateManager` updates on team events; skill toggle returns updated object |
+| TypeScript examples | `examples/typescript/08_team_events.ts`, `examples/typescript/09_skills_and_hitl.ts` | Team stream with live member status display; skills list + toggle + HITL answer |
+
+---
+
+## Phase 13 — REST API: Extended Endpoints and Examples
+
+| Task | File | Done when |
+|---|---|---|
+| `POST /v1/teams/{name}/run` — trigger a named team with a prompt; returns `{session_id, output}` | `openjiuwen/gateway/rest/teams.py` | Blocking endpoint; team identified by name registered in agent registry |
+| `GET /v1/agents/{name}/skills` — list skills for a named agent | `openjiuwen/gateway/rest/agents.py` | Returns `[{skill_id, name, description, enabled, trigger}]` |
+| `POST /v1/agents/{name}/skills/{id}/toggle` — enable or disable a skill | `openjiuwen/gateway/rest/agents.py` | Body: `{"enabled": bool}`; returns updated skill object |
+| `POST /v1/sessions/{id}/interrupt` — stop an active session | `openjiuwen/gateway/rest/sessions.py` | Returns `204`; idempotent if session already done |
+| `GET /v1/sessions/{id}/usage` — token and cost summary for a session | `openjiuwen/gateway/rest/sessions.py` | Returns `{input_tokens, output_tokens, cost_usd, turn_count}` |
+| Unit tests | `tests/unit/gateway/test_rest_extended.py` | Each new endpoint; 404 for unknown agents/sessions |
+| REST examples | `examples/rest/10_team_run.sh`, `examples/rest/11_skills.sh`, `examples/rest/12_interrupt_and_usage.sh` | cURL demonstrations of each new endpoint |
+| Update `examples/README.md` | `examples/README.md` | New REST rows added to table |
+
+---
+
+## Phase 14 — Docs and Examples Reorganization
+
+No code changes. Purely structural improvements to the example tree and docs.
+Can run in parallel with any other phase.
+
+| Task | File | Done when |
+|---|---|---|
+| Create subfolders under `examples/python/`: `core/`, `agents/`, `workflow/`, `memory_knowledge/`, `optimization/`, `observability/`, `infra/`, `advanced/` | `examples/python/` | All 42 examples moved to appropriate subfolders; symlinks or redirects for any old paths |
+| Update `examples/README.md` — grouped table by subfolder with section headers | `examples/README.md` | Replaces flat table; navigable by topic |
+| Update `docs/contributing.md` — new example folder structure | `docs/contributing.md` | `examples/python/` layout diagram updated |
+| Add `stream.py` and `mode.py` to module layout in `docs/rat_sig/SIG.md` | `docs/rat_sig/SIG.md` | Module table row for each new file with one-line description |
+| Add Phase 1–13 capabilities to `docs/rat_sig/RAT.md` demand section | `docs/rat_sig/RAT.md` | New subsection "Extended Requirements (v2)" listing each phase's motivation |
+| Add `docs/rat_sig/SIG.md` module layout section for new SDK modules: `tools/`, `knowledge/retrieval.py`, `knowledge/chunking.py`, `optimize/training.py`, `agents/swarm_state.py` | `docs/rat_sig/SIG.md` | Each new file in the bridge table |
+
+---
+
+## Phase 15 — Symphony Capability Orchestration (Facade)
+
+Lightweight façade over `openjiuwen.symphony` for skill-graph-based routing.
+This is architecturally significant but deliberately scoped narrow for v2.
+
+| Task | File | Done when |
+|---|---|---|
+| `SymphonyConfig(skills_dir, llm_model, cache_dir)` — configuration for the skill graph | `openjiuwen/sdk/symphony.py` | Dataclass; `from_env()` reads `JIUWENSWARM_SKILLS_DIR` |
+| `Symphony.build(config)` async class method — scans `skills_dir`, fingerprints capabilities, builds graph | `openjiuwen/sdk/symphony.py` | Returns `Symphony` instance; progress callback optional |
+| `symphony.retrieve(query, top_k=5)` — returns ranked list of `CapabilityMatch(name, score, description)` | `openjiuwen/sdk/symphony.py` | Uses `openjiuwen.symphony.retrieval.Retriever` under the hood |
+| `symphony.route(prompt)` — selects best skill for a prompt and returns its callable | `openjiuwen/sdk/symphony.py` | Returns `Callable[[str], Awaitable[str]]` |
+| Export from `openjiuwen.sdk` | `openjiuwen/sdk/__init__.py` | `from openjiuwen.sdk import Symphony, SymphonyConfig` |
+| Unit tests (mock scanner and retriever) | `tests/unit/sdk/test_symphony.py` | Build with mock skills dir; retrieve returns sorted candidates; route calls selected skill |
+| Docs + example | `docs/api-reference.md`, `examples/python/43_symphony.py` | New `## Symphony` section; example with skills dir, build, and route |
 
 ---
 
 ## Phase A — Additional Evaluation Metrics
 
-No infrastructure dependencies. Adds to the existing `openjiuwen/sdk/optimize/eval.py`
-module and the `MetricEvaluator` pipeline.
+Independent of Phases 1–15. No infrastructure dependencies. Adds to the existing
+`openjiuwen/sdk/optimize/eval.py` module and the `MetricEvaluator` pipeline.
 
 ### `RougeMetric`
 
