@@ -59,6 +59,30 @@ from openjiuwen.sdk.core.errors import (
 from openjiuwen.sdk.core.agent import Agent, AgentResult
 
 # ---------------------------------------------------------------------------
+# Mode / channel constants
+# ---------------------------------------------------------------------------
+
+from openjiuwen.sdk.core.mode import AgentMode, ChannelId
+
+# ---------------------------------------------------------------------------
+# Stream events
+# ---------------------------------------------------------------------------
+
+from openjiuwen.sdk.core.stream import (
+    DeltaEvent,
+    DoneEvent,
+    ErrorEvent,
+    ReasoningEvent,
+    StatusEvent,
+    StreamEvent,
+    TeamEvent,
+    ToolCallEvent,
+    ToolResultEvent,
+    parse_gateway_envelope,
+    parse_runtime_chunk,
+)
+
+# ---------------------------------------------------------------------------
 # Session
 # ---------------------------------------------------------------------------
 
@@ -252,6 +276,21 @@ __all__ = [
     # Agent
     "Agent",
     "AgentResult",
+    # Mode / channel
+    "AgentMode",
+    "ChannelId",
+    # Stream events
+    "StreamEvent",
+    "DeltaEvent",
+    "ReasoningEvent",
+    "StatusEvent",
+    "ToolCallEvent",
+    "ToolResultEvent",
+    "TeamEvent",
+    "DoneEvent",
+    "ErrorEvent",
+    "parse_runtime_chunk",
+    "parse_gateway_envelope",
     # Session
     "Session",
     "Message",

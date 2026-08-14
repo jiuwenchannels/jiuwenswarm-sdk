@@ -59,6 +59,60 @@ class SdkConfig:
 
 ---
 
+## AgentMode and ChannelId
+
+Type-safe constants for the `mode` and `channel_id` parameters accepted by
+`Agent.create()`, `Agent.connect()`, `Agent.run()`, `Agent.stream()`, and
+`Agent.stream_events()`.
+
+```python
+from openjiuwen.sdk import AgentMode, ChannelId
+
+agent = await Agent.create(
+    "coder",
+    model=cfg,
+    mode=AgentMode.CODE,         # default mode for all requests
+    channel_id=ChannelId.IDE,    # default channel for all requests
+)
+
+# Override per-call:
+result = await agent.run("Write tests.", mode=AgentMode.CODE_TEAM)
+```
+
+### `AgentMode`
+
+| Constant | Value | Description |
+|---|---|---|
+| `AgentMode.AGENT` | `"agent"` | General-purpose agent (default) |
+| `AgentMode.CODE` | `"code"` | Code-focused mode — minimal prose |
+| `AgentMode.TEAM` | `"team"` | Multi-agent team coordination |
+| `AgentMode.CODE_TEAM` | `"code.team"` | Code + team (collaborative code generation) |
+| `AgentMode.DEFAULT` | `"agent"` | Alias for `AGENT` |
+
+```python
+AgentMode.values() -> list[str]          # ["agent", "code", "team", "code.team"]
+AgentMode.validate(value: str) -> str    # raises ValueError if unknown
+```
+
+### `ChannelId`
+
+| Constant | Value | Description |
+|---|---|---|
+| `ChannelId.API` | `"api"` | Generic programmatic / REST channel (default) |
+| `ChannelId.JUPYTER` | `"jupyter"` | JupyterLab extension channel |
+| `ChannelId.IDE` | `"ide"` | JetBrains / VS Code extension channel |
+| `ChannelId.BROWSER` | `"browser"` | Browser extension channel |
+| `ChannelId.CLI` | `"cli"` | Command-line interface channel |
+
+```python
+ChannelId.values() -> list[str]   # ["api", "jupyter", "ide", "browser", "cli"]
+```
+
+> **Note:** `channel_id` only affects remote/gateway mode. In in-process mode it
+> is forwarded in the request metadata but has no routing effect.
+
+---
+
 ## Agent
 
 ```python
@@ -80,6 +134,8 @@ class Agent:
         rl_optimizer: OnlineRLOptimizer | None = None,
         context_engine: ContextEngine | None = None,
         permission_engine: PermissionEngine | None = None,
+        channel_id: str | None = None,   # default channel for all requests
+        mode: str | None = None,         # default mode: "agent"|"code"|"team"|"code.team"
     ) -> "Agent": ...
 
     @classmethod
@@ -89,6 +145,8 @@ class Agent:
         *,
         auth_token: str | None = None,
         config: RemoteConfig | None = None,
+        channel_id: str | None = None,
+        mode: str | None = None,
     ) -> "Agent": ...
 
     async def run(
@@ -96,6 +154,9 @@ class Agent:
         prompt: str,
         *,
         session_id: str | None = None,
+        mode: str | None = None,           # overrides default set at create()
+        channel_id: str | None = None,     # overrides default set at create()
+        context_prefix: str | None = None, # prepended to prompt with --- separator
         images: list[ImageInput] | None = None,
         audio: list[AudioInput] | None = None,
     ) -> "AgentResult": ...
@@ -105,7 +166,20 @@ class Agent:
         prompt: str,
         *,
         session_id: str | None = None,
+        mode: str | None = None,
+        channel_id: str | None = None,
+        context_prefix: str | None = None,
     ) -> AsyncIterator[str]: ...
+
+    async def stream_events(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None = None,
+        mode: str | None = None,
+        channel_id: str | None = None,
+        context_prefix: str | None = None,
+    ) -> AsyncIterator[StreamEvent]: ...
 
     def on(self, event: str, callback: Callable) -> None: ...
     def off(self, event: str, callback: Callable) -> None: ...
@@ -120,13 +194,39 @@ class Agent:
         model: ModelConfig | None = None,
     ) -> "Agent": ...
 
-    def run_sync(self, prompt: str, *, session_id: str | None = None) -> "AgentResult": ...
+    def run_sync(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None = None,
+        mode: str | None = None,
+        channel_id: str | None = None,
+        context_prefix: str | None = None,
+    ) -> "AgentResult": ...
 
     @property
     def memory(self) -> "Memory": ...
 ```
 
-**Events:** `"token"`, `"done"`, `"error"`, `"tool_call"`, `"tool_result"`, `"start"`.
+**Events emitted on `agent.on(…)`:**
+
+| Event | Arguments | When |
+|---|---|---|
+| `"token"` | `(text: str)` | Each streaming text token |
+| `"reasoning"` | `(text: str)` | Each reasoning/thinking token |
+| `"status"` | `(status: str)` | Processing status update |
+| `"tool_call"` | `(name: str, args: dict)` | Tool invocation started |
+| `"tool_result"` | `(name: str, result)` | Tool returned a result |
+| `"done"` | `()` | Agent finished |
+| `"error"` | `(msg: str)` | Agent encountered an error |
+
+**`mode` values:** `"agent"` (default), `"code"` (code generation), `"team"` (multi-agent), `"code.team"` (code + team).
+Use `AgentMode` constants instead of bare strings: `AgentMode.CODE`, `AgentMode.TEAM`, etc.
+
+**`channel_id`:** Routes requests to a named channel on the jiuwenswarm server. Common values: `"api"`, `"jupyter"`, `"ide"`, `"browser"`, `"cli"`. Only affects remote/gateway mode; ignored in in-process mode.
+Use `ChannelId` constants instead of bare strings: `ChannelId.API`, `ChannelId.JUPYTER`, etc.
+
+**`context_prefix`:** Optional string prepended to `prompt` with a `\n\n---\n\n` separator before the request is dispatched. Mirrors the JupyterLab "inject context" pattern — use it to pass file contents, notebook cells, or IDE state to the agent without modifying the user-visible prompt.
 
 ### `AgentResult`
 
@@ -135,8 +235,116 @@ class Agent:
 class AgentResult:
     text: str
     session_id: str
-    tool_calls: list[dict]
     metadata: dict
+```
+
+---
+
+## Stream Events
+
+Typed event objects yielded by `agent.stream_events()` and `team.stream()`.
+
+```python
+from openjiuwen.sdk import (
+    StreamEvent,      # base class
+    DeltaEvent,       # text token from the model
+    ReasoningEvent,   # token from the model's thinking phase
+    StatusEvent,      # processing status update
+    ToolCallEvent,    # tool is about to be called
+    ToolResultEvent,  # tool returned a result
+    TeamEvent,        # multi-agent coordination event
+    DoneEvent,        # stream completed
+    ErrorEvent,       # stream ended with error
+)
+```
+
+### Hierarchy
+
+```python
+@dataclass
+class StreamEvent:
+    type: str    # discriminator
+
+@dataclass
+class DeltaEvent(StreamEvent):
+    type: Literal["delta"]
+    delta: str
+
+@dataclass
+class ReasoningEvent(StreamEvent):
+    type: Literal["reasoning"]
+    delta: str       # reasoning/thinking token
+
+@dataclass
+class StatusEvent(StreamEvent):
+    type: Literal["status"]
+    status: str
+    is_complete: bool
+
+@dataclass
+class ToolCallEvent(StreamEvent):
+    type: Literal["tool_call"]
+    tool_name: str
+    arguments: dict[str, Any]
+    call_id: str
+
+@dataclass
+class ToolResultEvent(StreamEvent):
+    type: Literal["tool_result"]
+    tool_name: str
+    result: Any
+    call_id: str
+    is_error: bool
+
+@dataclass
+class TeamEvent(StreamEvent):
+    type: str          # "team.agent_start" | "team.agent_done" | "team.handoff" | …
+    agent_name: str
+    payload: dict[str, Any]
+
+@dataclass
+class DoneEvent(StreamEvent):
+    type: Literal["done"]
+    text: str          # full assembled response
+
+@dataclass
+class ErrorEvent(StreamEvent):
+    type: Literal["error"]
+    message: str
+```
+
+### Usage pattern
+
+```python
+from openjiuwen.sdk import Agent, DeltaEvent, ReasoningEvent, ToolCallEvent, ToolResultEvent, DoneEvent
+
+agent = await Agent.create("assistant", model=cfg, tools=[web_search])
+
+async for event in agent.stream_events("What is the latest news on AI?"):
+    match event.type:
+        case "reasoning":
+            print(f"[thinking] {event.delta}", end="")
+        case "status":
+            print(f"\n[{event.status}]")
+        case "tool_call":
+            print(f"\n→ {event.tool_name}({event.arguments})")
+        case "tool_result":
+            print(f"← {event.result}")
+        case "delta":
+            print(event.delta, end="", flush=True)
+        case "done":
+            print()
+            break
+```
+
+### Low-level helpers
+
+```python
+# Convert a raw runtime chunk to a StreamEvent
+parse_runtime_chunk(chunk: Any) -> StreamEvent
+
+# Convert a gateway WebSocket envelope to a StreamEvent (or None for ack/housekeeping)
+parse_gateway_envelope(env: dict) -> StreamEvent | None
 ```
 
 ---
@@ -278,27 +486,49 @@ class Team:
     @classmethod
     async def create(
         cls,
-        agents: list[Agent] | None = None,
+        agents: list[Agent],
         *,
-        spec: TeamSpec | None = None,
-        enable_hitt: bool = False,
+        model: ModelConfig | None = None,
+        spec: TeamAgentSpec | None = None,
+        team_name: str | None = None,
     ) -> "Team": ...
 
     async def spawn(self, prompt: str) -> "TeamResult": ...
+
+    async def stream(self, prompt: str) -> AsyncIterator[StreamEvent]: ...
+    # Yields typed StreamEvent objects including TeamEvent for per-agent coordination.
+    # Common TeamEvent.type values:
+    #   "team.agent_start"  — an agent was assigned work
+    #   "team.agent_done"   — an agent finished its subtask
+    #   "team.handoff"      — leader routing work to a teammate
+    # Always ends with a DoneEvent whose .text is the full assembled response.
+
     async def send(self, message: str, *, to: str | None = None) -> None: ...
-    async def status(self) -> "TeamStatus": ...
 
 @dataclass(frozen=True)
 class TeamResult:
-    output: str
-    contributions: dict[str, str]
+    final_output: str
     session_id: str
+    member_outputs: dict[str, str]
+```
 
-@dataclass(frozen=True)
-class TeamStatus:
-    active_agents: list[str]
-    completed: bool
-    turn: int
+#### `Team.stream()` example
+
+```python
+from openjiuwen.sdk import Team, Agent, DeltaEvent, TeamEvent, DoneEvent
+
+researcher = await Agent.create("researcher", model=cfg)
+writer     = await Agent.create("writer",     model=cfg)
+team = await Team.create([researcher, writer], model=cfg)
+
+async for event in team.stream("Research and write about quantum computing"):
+    if isinstance(event, TeamEvent):
+        print(f"[{event.type}] {event.agent_name}")
+    elif isinstance(event, DeltaEvent):
+        print(event.delta, end="", flush=True)
+    elif isinstance(event, DoneEvent):
+        print()
+        break
 ```
 
 ### Human-in-the-loop

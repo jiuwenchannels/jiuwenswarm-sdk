@@ -2,7 +2,8 @@
 
 :class:`Agent` is the primary entry point of the Python SDK.  It has two
 constructors — :meth:`create` (in-process) and :meth:`connect` (remote) —
-and exposes the same ``run`` / ``stream`` / ``on`` API in both modes.
+and exposes the same ``run`` / ``stream`` / ``stream_events`` / ``on`` API
+in both modes.
 
 In-process mode::
 
@@ -15,6 +16,18 @@ Remote mode::
     agent = await Agent.connect("ws://localhost:19000/v1/ws")
     result = await agent.run("Hello!")
     print(result.text)
+
+Typed event streaming::
+
+    async for event in agent.stream_events("Write a haiku."):
+        if isinstance(event, DeltaEvent):
+            print(event.delta, end="", flush=True)
+        elif isinstance(event, ReasoningEvent):
+            print(f"[thinking] {event.delta}")
+        elif isinstance(event, ToolCallEvent):
+            print(f"\\n→ {event.tool_name}({event.arguments})")
+        elif isinstance(event, DoneEvent):
+            break
 """
 
 from __future__ import annotations
@@ -27,6 +40,7 @@ from openjiuwen.sdk.core.events import EventEmitter
 if TYPE_CHECKING:
     from openjiuwen.sdk.core.config import ModelConfig, RemoteConfig
     from openjiuwen.sdk.core.hooks import Hooks
+    from openjiuwen.sdk.core.stream import StreamEvent
     from openjiuwen.sdk.core.tools import SdkTool
 
 
@@ -60,19 +74,22 @@ class Agent(EventEmitter):
 
     Do **not** instantiate directly.  Use :meth:`create` or :meth:`connect`.
 
-    Events
-    ------
-    ``"token"``       — ``(text: str)`` streaming token arrived.
-    ``"done"``        — ``()``          agent finished.
-    ``"error"``       — ``(msg: str)``  agent encountered an error.
-    ``"tool_call"``   — ``(name: str, args: dict)``   tool call started.
-    ``"tool_result"`` — ``(name: str, result: str)``  tool call completed.
+    Events emitted on ``self``
+    --------------------------
+    ``"token"``        — ``(text: str)``          streaming text token arrived.
+    ``"reasoning"``    — ``(text: str)``          reasoning/thinking token arrived.
+    ``"status"``       — ``(status: str)``         processing status update.
+    ``"tool_call"``    — ``(name: str, args: dict)`` tool call started.
+    ``"tool_result"``  — ``(name: str, result)``  tool call completed.
+    ``"done"``         — ``()``                    agent finished.
+    ``"error"``        — ``(msg: str)``            agent encountered an error.
     """
 
-    def __init__(self, _handle: Any, *, _mode: str) -> None:
+    def __init__(self, _handle: Any, *, _mode: str, _channel_id: str | None = None) -> None:
         super().__init__()
         self._handle = _handle
         self._mode = _mode  # "inprocess" or "remote"
+        self._channel_id = _channel_id
 
     # ------------------------------------------------------------------
     # Constructors
@@ -96,6 +113,8 @@ class Agent(EventEmitter):
         rl_optimizer: Any = None,
         system_prompt: Optional[str] = None,
         hooks: Optional["Hooks"] = None,
+        channel_id: Optional[str] = None,
+        mode: Optional[str] = None,
     ) -> "Agent":
         """Create an in-process agent.
 
@@ -124,9 +143,15 @@ class Agent(EventEmitter):
             system_prompt:     Override the default system prompt.
             hooks:             :class:`~openjiuwen.sdk.core.hooks.Hooks` instance
                                with pre-registered lifecycle callbacks.
+            channel_id:        Route all requests from this agent through a specific
+                               channel (e.g. ``"jupyter"``, ``"ide"``, ``"api"``).
+                               Overridable per-call in :meth:`run` / :meth:`stream`.
+            mode:              Default execution mode for this agent
+                               (``"agent"``, ``"code"``, ``"team"``, ``"code.team"``).
+                               Overridable per-call.
 
         Returns:
-            An :class:`Agent` ready for ``run()`` / ``stream()`` calls.
+            An :class:`Agent` ready for ``run()`` / ``stream()`` / ``stream_events()`` calls.
         """
         from openjiuwen.sdk._internal.runner_bridge import AgentHandle
         from openjiuwen.sdk.core.config import ModelConfig
@@ -152,7 +177,8 @@ class Agent(EventEmitter):
         # Eagerly initialise the DeepAgent so errors surface here, not at
         # the first run() call.
         await handle._ensure_agent()
-        agent = cls(handle, _mode="inprocess")
+        agent = cls(handle, _mode="inprocess", _channel_id=channel_id)
+        agent._default_mode = mode
         if hooks is not None:
             hooks.wire(agent)
         return agent
@@ -164,6 +190,8 @@ class Agent(EventEmitter):
         *,
         auth_token: Optional[str] = None,
         config: Optional["RemoteConfig"] = None,
+        channel_id: Optional[str] = None,
+        mode: Optional[str] = None,
     ) -> "Agent":
         """Connect to a remote JiuwenSwarm server.
 
@@ -176,6 +204,9 @@ class Agent(EventEmitter):
             auth_token:  Bearer token for the ``Authorization`` header.
             config:      Full :class:`~openjiuwen.sdk.core.config.RemoteConfig`
                          (takes precedence over individual args).
+            channel_id:  Route all requests through a specific channel
+                         (e.g. ``"api"``, ``"ide"``, ``"jupyter"``).
+            mode:        Default execution mode (``"agent"``, ``"code"``, etc.).
 
         Returns:
             An :class:`Agent` backed by the remote server.
@@ -203,7 +234,9 @@ class Agent(EventEmitter):
             max_retries=max_retries,
         )
         await handle.connect()
-        return cls(handle, _mode="remote")
+        agent = cls(handle, _mode="remote", _channel_id=channel_id)
+        agent._default_mode = mode
+        return agent
 
     # ------------------------------------------------------------------
     # Sync convenience constructor (in-process only)
@@ -236,29 +269,68 @@ class Agent(EventEmitter):
     # Run (non-streaming)
     # ------------------------------------------------------------------
 
+    def _effective_mode(self, override: Optional[str]) -> Optional[str]:
+        return override or getattr(self, "_default_mode", None)
+
+    def _effective_channel(self, override: Optional[str]) -> Optional[str]:
+        return override or self._channel_id
+
+    @staticmethod
+    def _apply_context(prompt: str, context_prefix: Optional[str]) -> str:
+        """Prepend *context_prefix* to *prompt* separated by ``---``.
+
+        Mirrors the pattern used by the JupyterLab and IDE extensions to
+        inject notebook/editor state before the user query.  When
+        *context_prefix* is ``None`` or empty the prompt is returned unchanged.
+        """
+        if not context_prefix:
+            return prompt
+        return f"{context_prefix.rstrip()}\n\n---\n\n{prompt}"
+
     async def run(
         self,
         prompt: str,
         *,
         session_id: Optional[str] = None,
+        mode: Optional[str] = None,
+        channel_id: Optional[str] = None,
+        context_prefix: Optional[str] = None,
     ) -> AgentResult:
         """Run the agent and return the complete response.
 
         Args:
-            prompt:     The user prompt / task description.
-            session_id: Existing session ID to continue.  A new session is
-                        created automatically if omitted.
+            prompt:         The user prompt / task description.
+            session_id:     Existing session ID to continue.  A new session is
+                            created automatically if omitted.
+            mode:           Execution mode for this request (``"agent"``,
+                            ``"code"``, ``"team"``, ``"code.team"``).
+                            Use :class:`~openjiuwen.sdk.core.mode.AgentMode`
+                            constants to avoid typos.
+                            Overrides the default set at creation time.
+            channel_id:     Channel routing override for this request.
+                            Use :class:`~openjiuwen.sdk.core.mode.ChannelId`
+                            constants.
+            context_prefix: Optional context block prepended to *prompt*
+                            before it is sent to the model.  A ``---``
+                            separator is inserted between the two.
+                            Useful for injecting IDE state, notebook variables,
+                            document excerpts, or conversation summaries.
 
         Returns:
             :class:`AgentResult` with ``text`` and ``session_id``.
         """
-        if self._mode == "inprocess":
-            raw = await self._handle.run(prompt, session_id=session_id)
-            result = AgentResult(text=raw.text, session_id=raw.session_id, metadata=raw.metadata)
-        else:
-            raw = await self._handle.run(prompt, session_id=session_id)
-            result = AgentResult(text=raw.text, session_id=raw.session_id)
-
+        full_prompt = self._apply_context(prompt, context_prefix)
+        kw: dict[str, Any] = dict(
+            session_id=session_id,
+            mode=self._effective_mode(mode),
+            channel_id=self._effective_channel(channel_id),
+        )
+        raw = await self._handle.run(full_prompt, **kw)
+        result = AgentResult(
+            text=raw.text,
+            session_id=raw.session_id,
+            metadata=getattr(raw, "metadata", {}),
+        )
         self.emit("done")
         return result
 
@@ -267,6 +339,9 @@ class Agent(EventEmitter):
         prompt: str,
         *,
         session_id: Optional[str] = None,
+        mode: Optional[str] = None,
+        channel_id: Optional[str] = None,
+        context_prefix: Optional[str] = None,
     ) -> AgentResult:
         """Synchronous variant of :meth:`run`.
 
@@ -277,10 +352,18 @@ class Agent(EventEmitter):
         """
         from openjiuwen.sdk._internal.sync_wrapper import run_sync
 
-        return run_sync(self.run(prompt, session_id=session_id))
+        return run_sync(
+            self.run(
+                prompt,
+                session_id=session_id,
+                mode=mode,
+                channel_id=channel_id,
+                context_prefix=context_prefix,
+            )
+        )
 
     # ------------------------------------------------------------------
-    # Stream
+    # Stream (text tokens — backward compatible)
     # ------------------------------------------------------------------
 
     async def stream(
@@ -288,12 +371,22 @@ class Agent(EventEmitter):
         prompt: str,
         *,
         session_id: Optional[str] = None,
+        mode: Optional[str] = None,
+        channel_id: Optional[str] = None,
+        context_prefix: Optional[str] = None,
     ) -> AsyncIterator[str]:
         """Stream the agent's response, yielding text tokens as they arrive.
 
+        This method is backward-compatible: it yields plain ``str`` tokens.
+        For richer events (reasoning, tool calls, status), use
+        :meth:`stream_events` instead.
+
         Args:
-            prompt:     The user prompt / task description.
-            session_id: Existing session ID to continue.
+            prompt:         The user prompt / task description.
+            session_id:     Existing session ID to continue.
+            mode:           Execution mode override.
+            channel_id:     Channel routing override.
+            context_prefix: Optional context block prepended to *prompt*.
 
         Yields:
             Text tokens (``str``).
@@ -303,15 +396,106 @@ class Agent(EventEmitter):
             async for token in agent.stream("Write a haiku."):
                 print(token, end="", flush=True)
         """
-        if self._mode == "inprocess":
-            async for token in self._handle.stream(prompt, session_id=session_id):
-                self.emit("token", token)
-                yield token
-        else:
-            async for token in self._handle.stream(prompt, session_id=session_id):
-                self.emit("token", token)
-                yield token
+        full_prompt = self._apply_context(prompt, context_prefix)
+        kw: dict[str, Any] = dict(
+            session_id=session_id,
+            mode=self._effective_mode(mode),
+            channel_id=self._effective_channel(channel_id),
+        )
+        async for token in self._handle.stream(full_prompt, **kw):
+            self.emit("token", token)
+            yield token
         self.emit("done")
+
+    # ------------------------------------------------------------------
+    # Stream events (typed)
+    # ------------------------------------------------------------------
+
+    async def stream_events(
+        self,
+        prompt: str,
+        *,
+        session_id: Optional[str] = None,
+        mode: Optional[str] = None,
+        channel_id: Optional[str] = None,
+        context_prefix: Optional[str] = None,
+    ) -> AsyncIterator["StreamEvent"]:
+        """Stream typed events from the agent.
+
+        Unlike :meth:`stream`, this yields :class:`~openjiuwen.sdk.core.stream.StreamEvent`
+        subclasses so you can observe every phase of execution: reasoning,
+        tool calls, processing status updates, and multi-agent team coordination.
+
+        Args:
+            prompt:         The user prompt / task description.
+            session_id:     Existing session ID to continue.
+            mode:           Execution mode override (``"agent"``, ``"code"``,
+                            ``"team"``, ``"code.team"``).
+                            Use :class:`~openjiuwen.sdk.core.mode.AgentMode` constants.
+            channel_id:     Channel routing override.
+                            Use :class:`~openjiuwen.sdk.core.mode.ChannelId` constants.
+            context_prefix: Optional context block prepended to *prompt*
+                            before it is sent to the model.
+
+        Yields:
+            :class:`~openjiuwen.sdk.core.stream.StreamEvent` subclasses.
+
+        Example::
+
+            from openjiuwen.sdk import DeltaEvent, ToolCallEvent, DoneEvent, AgentMode
+
+            async for event in agent.stream_events(
+                "Search for the latest AI news.",
+                mode=AgentMode.AGENT,
+            ):
+                if isinstance(event, DeltaEvent):
+                    print(event.delta, end="", flush=True)
+                elif isinstance(event, ToolCallEvent):
+                    print(f"\\n→ calling {event.tool_name}")
+                elif isinstance(event, DoneEvent):
+                    break
+
+        Cancellation::
+
+            gen = agent.stream_events("Long task …")
+            async for event in gen:
+                if should_stop:
+                    await gen.aclose()   # cancel mid-stream
+                    break
+        """
+        from openjiuwen.sdk.core.stream import (
+            DeltaEvent,
+            DoneEvent,
+            ErrorEvent,
+            ReasoningEvent,
+            StatusEvent,
+            ToolCallEvent,
+            ToolResultEvent,
+        )
+
+        full_prompt = self._apply_context(prompt, context_prefix)
+        kw: dict[str, Any] = dict(
+            session_id=session_id,
+            mode=self._effective_mode(mode),
+            channel_id=self._effective_channel(channel_id),
+        )
+        async for event in self._handle.stream_events(full_prompt, **kw):
+            # Mirror key events onto the EventEmitter bus
+            if isinstance(event, DeltaEvent):
+                self.emit("token", event.delta)
+            elif isinstance(event, ReasoningEvent):
+                self.emit("reasoning", event.delta)
+            elif isinstance(event, StatusEvent):
+                self.emit("status", event.status)
+            elif isinstance(event, ToolCallEvent):
+                self.emit("tool_call", event.tool_name, event.arguments)
+            elif isinstance(event, ToolResultEvent):
+                self.emit("tool_result", event.tool_name, event.result)
+            elif isinstance(event, DoneEvent):
+                self.emit("done")
+            elif isinstance(event, ErrorEvent):
+                self.emit("error", event.message)
+            yield event
 
     # ------------------------------------------------------------------
     # Checkpoint (in-process only)

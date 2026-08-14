@@ -5,7 +5,7 @@ The examples mirror the sections in the official usage guide.
 
 ```
 examples/
-├── python/          Python SDK examples (§0–§29)
+├── python/          Python SDK examples (§0–§32)
 ├── typescript/      TypeScript SDK examples (§1–§6)
 └── rest/            REST / cURL shell scripts (§1–§9)
 ```
@@ -43,7 +43,7 @@ jiuwenswarm serve   # ws://localhost:19000  and  http://localhost:19001
 | File | §  | Feature |
 |------|----|---------|
 | `python/01_quick_start.py` | §0–1 | 10-line hello world — in-process and remote mode |
-| `python/02_streaming.py` | §2 | Stream tokens with async-for and event callbacks |
+| `python/02_streaming.py` | §2 | Stream tokens — async-for, event callbacks, and typed `stream_events()` |
 | `python/03_session_management.py` | §3 | Session CRUD, multi-turn conversation, history |
 | `python/04_custom_tools.py` | §4 | `@tool` decorator — sync, async, enum constraints |
 | `python/05_workflow_advanced.py` | §5 | Full workflow DAG with Start/End/LLM/Branch/Loop nodes |
@@ -75,6 +75,8 @@ jiuwenswarm serve   # ws://localhost:19000  and  http://localhost:19001
 | `python/28_online_rl.py` | §28 | `OnlineRLOptimizer`, `OfflineRLOptimizer`, reward registry |
 | `python/29_mcp_server.py` | §29 | MCP server — subprocess and embedded `build_server()` modes |
 | `python/30_gateway_startup.py` | §30 | HTTP + WebSocket gateway — start server, REST chat, SSE stream, WS protocol |
+| `python/31_stream_events.py` | §31 | Typed `stream_events()` — all event types, `AgentMode`, `ChannelId`, `context_prefix`, cancellation |
+| `python/32_team_stream.py` | §32 | `team.stream()` — watch multi-agent coordination in real time with `TeamEvent` |
 
 ---
 

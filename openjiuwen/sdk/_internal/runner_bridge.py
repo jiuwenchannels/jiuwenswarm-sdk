@@ -262,7 +262,14 @@ class AgentHandle:
     # Run (non-streaming)
     # ------------------------------------------------------------------
 
-    async def run(self, prompt: str, session_id: str | None = None) -> "AgentRunResult":
+    async def run(
+        self,
+        prompt: str,
+        session_id: str | None = None,
+        *,
+        mode: str | None = None,
+        channel_id: str | None = None,
+    ) -> "AgentRunResult":
         agent = await self._ensure_agent()
 
         # Resolve or create the SDK session record.
@@ -273,13 +280,19 @@ class AgentHandle:
 
                 raise SessionError(f"Session '{session_id}' not found.")
         else:
-            record = _sb.create_session(title=f"{self.name} session", mode="default")
+            record = _sb.create_session(title=f"{self.name} session", mode=mode or "default")
 
         internal_sess = _sb.make_internal_session(record)
         await internal_sess.pre_run()
 
+        inputs: dict[str, Any] = {"query": prompt}
+        if mode:
+            inputs["mode"] = mode
+        if channel_id:
+            inputs["channel_id"] = channel_id
+
         try:
-            result = await agent.invoke({"query": prompt}, agent_session=internal_sess)
+            result = await agent.invoke(inputs, agent_session=internal_sess)
         except Exception as exc:
             from openjiuwen.sdk.core.errors import AgentError
 
@@ -299,7 +312,14 @@ class AgentHandle:
     # Stream
     # ------------------------------------------------------------------
 
-    async def stream(self, prompt: str, session_id: str | None = None) -> AsyncIterator[str]:
+    async def stream(
+        self,
+        prompt: str,
+        session_id: str | None = None,
+        *,
+        mode: str | None = None,
+        channel_id: str | None = None,
+    ) -> AsyncIterator[str]:
         agent = await self._ensure_agent()
 
         if session_id is not None:
@@ -309,14 +329,20 @@ class AgentHandle:
 
                 raise SessionError(f"Session '{session_id}' not found.")
         else:
-            record = _sb.create_session(title=f"{self.name} session", mode="default")
+            record = _sb.create_session(title=f"{self.name} session", mode=mode or "default")
 
         internal_sess = _sb.make_internal_session(record)
         await internal_sess.pre_run()
 
+        inputs: dict[str, Any] = {"query": prompt}
+        if mode:
+            inputs["mode"] = mode
+        if channel_id:
+            inputs["channel_id"] = channel_id
+
         collected: list[str] = []
         try:
-            async for chunk in agent.stream({"query": prompt}, agent_session=internal_sess):
+            async for chunk in agent.stream(inputs, agent_session=internal_sess):
                 token = _extract_token(chunk)
                 if token:
                     collected.append(token)
@@ -334,6 +360,65 @@ class AgentHandle:
         text = "".join(collected)
         _sb.append_message(record.id, role="user", text=prompt)
         _sb.append_message(record.id, role="assistant", text=text)
+
+    async def stream_events(
+        self,
+        prompt: str,
+        session_id: str | None = None,
+        *,
+        mode: str | None = None,
+        channel_id: str | None = None,
+    ) -> AsyncIterator[Any]:
+        """Stream typed :class:`~openjiuwen.sdk.core.stream.StreamEvent` objects."""
+        from openjiuwen.sdk.core.stream import DeltaEvent, DoneEvent, ErrorEvent, parse_runtime_chunk
+
+        agent = await self._ensure_agent()
+
+        if session_id is not None:
+            record = _sb.get_session(session_id)
+            if record is None:
+                from openjiuwen.sdk.core.errors import SessionError
+
+                raise SessionError(f"Session '{session_id}' not found.")
+        else:
+            record = _sb.create_session(title=f"{self.name} session", mode=mode or "default")
+
+        internal_sess = _sb.make_internal_session(record)
+        await internal_sess.pre_run()
+
+        inputs: dict[str, Any] = {"query": prompt}
+        if mode:
+            inputs["mode"] = mode
+        if channel_id:
+            inputs["channel_id"] = channel_id
+
+        text_buf: list[str] = []
+        done_emitted = False
+        try:
+            async for chunk in agent.stream(inputs, agent_session=internal_sess):
+                event = parse_runtime_chunk(chunk)
+                if isinstance(event, DeltaEvent) and event.delta:
+                    text_buf.append(event.delta)
+                if isinstance(event, DoneEvent):
+                    done_emitted = True
+                    if not event.text:
+                        event = DoneEvent(text="".join(text_buf))
+                yield event
+        except Exception as exc:
+            yield ErrorEvent(message=str(exc))
+            done_emitted = True
+        finally:
+            try:
+                await internal_sess.post_run()
+            except Exception:  # noqa: BLE001
+                pass
+
+        if not done_emitted:
+            yield DoneEvent(text="".join(text_buf))
+
+        full_text = "".join(text_buf)
+        _sb.append_message(record.id, role="user", text=prompt)
+        _sb.append_message(record.id, role="assistant", text=full_text)
 
     # ------------------------------------------------------------------
     # Checkpoint

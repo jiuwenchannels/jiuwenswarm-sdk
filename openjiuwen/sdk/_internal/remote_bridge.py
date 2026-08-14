@@ -162,15 +162,42 @@ class RemoteHandle:
     # Run (non-streaming)
     # ------------------------------------------------------------------
 
-    async def run(self, prompt: str, session_id: str | None = None) -> "RemoteRunResult":
+    def _chat_envelope(
+        self,
+        sid: str,
+        prompt: str,
+        mode: str | None,
+        channel_id: str | None,
+    ) -> dict[str, Any]:
+        """Build the chat envelope sent to the gateway."""
+        env: dict[str, Any] = {
+            "type": "chat",
+            "session_id": sid,
+            "message": prompt,
+            "mode": mode or "default",
+        }
+        if channel_id:
+            env["channel_id"] = channel_id
+        return env
+
+    async def _ensure_session(self, session_id: str | None) -> str:
         sid = session_id or self._active_session_id
         if sid is None:
-            # Auto-create a session
             sess = await self.create_session(title="SDK session")
             sid = sess.get("session_id") or sess.get("id") or f"sess_{uuid.uuid4().hex[:12]}"
             self._active_session_id = sid
+        return sid
 
-        await self._send({"type": "chat", "session_id": sid, "message": prompt, "mode": "default"})
+    async def run(
+        self,
+        prompt: str,
+        session_id: str | None = None,
+        *,
+        mode: str | None = None,
+        channel_id: str | None = None,
+    ) -> "RemoteRunResult":
+        sid = await self._ensure_session(session_id)
+        await self._send(self._chat_envelope(sid, prompt, mode, channel_id))
 
         tokens: list[str] = []
         async with self._lock:
@@ -189,17 +216,19 @@ class RemoteHandle:
         return RemoteRunResult(text="".join(tokens), session_id=sid)
 
     # ------------------------------------------------------------------
-    # Stream
+    # Stream (text tokens only — backward compatible)
     # ------------------------------------------------------------------
 
-    async def stream(self, prompt: str, session_id: str | None = None) -> AsyncIterator[str]:
-        sid = session_id or self._active_session_id
-        if sid is None:
-            sess = await self.create_session(title="SDK session")
-            sid = sess.get("session_id") or sess.get("id") or f"sess_{uuid.uuid4().hex[:12]}"
-            self._active_session_id = sid
-
-        await self._send({"type": "chat", "session_id": sid, "message": prompt, "mode": "default"})
+    async def stream(
+        self,
+        prompt: str,
+        session_id: str | None = None,
+        *,
+        mode: str | None = None,
+        channel_id: str | None = None,
+    ) -> AsyncIterator[str]:
+        sid = await self._ensure_session(session_id)
+        await self._send(self._chat_envelope(sid, prompt, mode, channel_id))
 
         while True:
             env = await self._recv()
@@ -208,13 +237,70 @@ class RemoteHandle:
                 text = env.get("text", "")
                 if text:
                     yield text
-            elif t in ("done",):
+            elif t == "done":
                 break
             elif t == "error":
                 _raise_server_error(env)
             elif t == "ack":
-                # ack just confirms the message was received; keep reading
-                pass
+                pass  # confirmation; keep reading
+
+    # ------------------------------------------------------------------
+    # Stream events (typed)
+    # ------------------------------------------------------------------
+
+    async def stream_events(
+        self,
+        prompt: str,
+        session_id: str | None = None,
+        *,
+        mode: str | None = None,
+        channel_id: str | None = None,
+    ) -> AsyncIterator[Any]:
+        """Stream typed :class:`~openjiuwen.sdk.core.stream.StreamEvent` objects."""
+        from openjiuwen.sdk.core.stream import (
+            DeltaEvent,
+            DoneEvent,
+            ErrorEvent,
+            parse_gateway_envelope,
+        )
+
+        sid = await self._ensure_session(session_id)
+        await self._send(self._chat_envelope(sid, prompt, mode, channel_id))
+
+        text_buf: list[str] = []
+        done_emitted = False
+
+        while True:
+            env = await self._recv()
+            t = env.get("type")
+
+            if t == "ack":
+                continue
+
+            event = parse_gateway_envelope(env)
+            if event is None:
+                # Unknown/housekeeping envelope — skip
+                if t in ("done",) or (t in ("ack",) and "session_id" in env):
+                    break
+                continue
+
+            if isinstance(event, DeltaEvent) and event.delta:
+                text_buf.append(event.delta)
+            if isinstance(event, DoneEvent):
+                if not event.text:
+                    event = DoneEvent(text="".join(text_buf))
+                done_emitted = True
+                yield event
+                break
+            if isinstance(event, ErrorEvent):
+                done_emitted = True
+                yield event
+                break
+
+            yield event
+
+        if not done_emitted:
+            yield DoneEvent(text="".join(text_buf))
 
 
 # ---------------------------------------------------------------------------

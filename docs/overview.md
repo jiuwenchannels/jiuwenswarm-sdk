@@ -73,18 +73,82 @@ async for token in agent.stream("Write a sonnet."):
 | `rl_optimizer` | `OnlineRLOptimizer \| None` | Online RL reward recording |
 | `context_engine` | `ContextEngine \| None` | Context compression pipeline |
 | `permission_engine` | `PermissionEngine \| None` | Tool permission policy |
+| `channel_id` | `str \| None` | Default channel for routing — use `ChannelId.API`, `.JUPYTER`, `.IDE`, `.BROWSER`, `.CLI` |
+| `mode` | `str \| None` | Default execution mode — use `AgentMode.AGENT`, `.CODE`, `.TEAM`, `.CODE_TEAM` |
 
 **Shared Agent API:**
 
 ```python
-result  = await agent.run(prompt, session_id=None)         # AgentResult
-stream  = agent.stream(prompt, session_id=None)            # AsyncIterator[str]
-ckpt_id = await agent.checkpoint()                         # str
-agent2  = await Agent.restore(ckpt_id, model=cfg)          # Agent
-result  = agent.run_sync(prompt)                           # sync wrapper
-agent.on("token", cb)   # events: token, done, error, tool_call, tool_result
+result  = await agent.run(prompt, session_id=None, mode=None, channel_id=None,
+                          context_prefix=None)                  # AgentResult
+stream  = agent.stream(prompt, session_id=None, mode=None, channel_id=None,
+                       context_prefix=None)                     # AsyncIterator[str]
+events  = agent.stream_events(prompt, session_id=None, mode=None, channel_id=None,
+                              context_prefix=None)              # AsyncIterator[StreamEvent]
+ckpt_id = await agent.checkpoint()                              # str
+agent2  = await Agent.restore(ckpt_id, model=cfg)              # Agent
+result  = agent.run_sync(prompt, context_prefix=None)           # sync wrapper
+agent.on("token", cb)      # events: token, reasoning, status,
+agent.on("reasoning", cb)  #         tool_call, tool_result, done, error
 agent.off("token", cb)
 ```
+
+### Typed event streaming
+
+`agent.stream()` yields plain `str` tokens (backward compatible).
+`agent.stream_events()` yields typed `StreamEvent` subclasses, exposing every
+phase of execution — reasoning, tool calls, processing status, and team coordination:
+
+```python
+from openjiuwen.sdk import DeltaEvent, ReasoningEvent, ToolCallEvent, ToolResultEvent, StatusEvent, DoneEvent
+
+async for event in agent.stream_events("Search the web for AI news"):
+    match event.type:
+        case "reasoning":
+            print(f"[thinking] {event.delta}", end="")
+        case "status":
+            print(f"\n[{event.status}]")
+        case "tool_call":
+            print(f"\n→ {event.tool_name}({event.arguments})")
+        case "tool_result":
+            print(f"← {event.result[:80]}")
+        case "delta":
+            print(event.delta, end="", flush=True)
+        case "done":
+            print()
+            break
+```
+
+`team.stream()` additionally yields `TeamEvent` with types like `"team.agent_start"`,
+`"team.agent_done"`, and `"team.handoff"` so you can watch the swarm coordinate in real time.
+
+### AgentMode, ChannelId, and context_prefix
+
+Use typed constants instead of bare strings:
+
+```python
+from openjiuwen.sdk import AgentMode, ChannelId
+
+agent = await Agent.create(
+    "coder",
+    model=cfg,
+    mode=AgentMode.CODE,         # default for all calls
+    channel_id=ChannelId.IDE,    # routes to the IDE pipeline on the gateway
+)
+
+# Override per-call and inject file context:
+async for event in agent.stream_events(
+    "Is there a bug in this function?",
+    mode=AgentMode.CODE,
+    channel_id=ChannelId.IDE,
+    context_prefix="# src/utils.py\ndef add(a, b): return a + b",
+):
+    ...
+```
+
+`context_prefix` is prepended to the prompt with a `\n\n---\n\n` separator before
+dispatching. Use it to inject notebook cells, open-file contents, or IDE state
+without embedding them in the user-visible message.
 
 ### Session management
 
@@ -589,13 +653,14 @@ Runs in browser, Node.js, and React Native.
 openjiuwen/
 ├── sdk/                          Python SDK
 │   ├── __init__.py               all public exports (stable surface)
-│   ├── core/                     Agent, config, errors, events, hooks, session, tools
+│   ├── core/                     Agent, config, errors, events, hooks, session, tools, stream
 │   │   ├── agent.py              Agent façade, AgentResult
 │   │   ├── config.py             ModelConfig, RemoteConfig
 │   │   ├── errors.py             SdkError hierarchy (10+ error types)
 │   │   ├── events.py             EventEmitter
 │   │   ├── hooks.py              Hooks lifecycle container
 │   │   ├── session.py            Session, Message
+│   │   ├── stream.py             StreamEvent hierarchy (DeltaEvent, ReasoningEvent, …)
 │   │   └── tools.py              @tool, SdkTool, ToolParam
 │   ├── agents/                   Multi-agent collaboration primitives
 │   │   ├── team.py               Team, TeamResult

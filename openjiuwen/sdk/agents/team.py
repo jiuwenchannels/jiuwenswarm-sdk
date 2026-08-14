@@ -16,11 +16,12 @@ Usage::
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Optional
 
 if TYPE_CHECKING:
     from openjiuwen.sdk.core.agent import Agent
     from openjiuwen.sdk.core.config import ModelConfig
+    from openjiuwen.sdk.core.stream import StreamEvent
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +129,34 @@ class Team:
             :class:`TeamResult` with ``final_output``.
         """
         return await self._handle.spawn(prompt)
+
+    async def stream(self, prompt: str) -> AsyncIterator["StreamEvent"]:
+        """Stream typed events from the team, including per-agent coordination events.
+
+        Unlike :meth:`spawn`, which blocks and returns a final result, this
+        method yields events as the team works — letting you observe which
+        agents are active, their individual outputs, and any tool calls.
+
+        Yields:
+            :class:`~openjiuwen.sdk.core.stream.StreamEvent` subclasses,
+            including :class:`~openjiuwen.sdk.core.stream.TeamEvent` with
+            types such as ``"team.agent_start"``, ``"team.agent_done"``,
+            and ``"team.handoff"``.
+
+        Example::
+
+            from openjiuwen.sdk.core.stream import DeltaEvent, TeamEvent, DoneEvent
+
+            async for event in team.stream("Research and summarise quantum computing."):
+                if isinstance(event, TeamEvent):
+                    print(f"[{event.type}] {event.agent_name}")
+                elif isinstance(event, DeltaEvent):
+                    print(event.delta, end="", flush=True)
+                elif isinstance(event, DoneEvent):
+                    break
+        """
+        async for event in self._handle.stream(prompt):
+            yield event
 
     async def send(self, message: str, *, to: Optional[str] = None) -> None:
         """Send a message to a specific team member (or broadcast).
@@ -245,6 +274,64 @@ class _TeamHandle:
             text = str(result)
 
         return TeamResult(final_output=text, session_id=session.get_session_id())
+
+    async def stream(self, prompt: str) -> AsyncIterator[Any]:
+        """Stream typed events from the team runtime."""
+        from openjiuwen.sdk.core.stream import (
+            DeltaEvent,
+            DoneEvent,
+            ErrorEvent,
+            TeamEvent,
+            parse_runtime_chunk,
+        )
+
+        team = await self._ensure_team()
+
+        from openjiuwen.core.session import create_agent_session
+
+        session = create_agent_session()
+        await session.pre_run()
+
+        text_buf: list[str] = []
+        done_emitted = False
+
+        try:
+            # Use the runtime's streaming interface if available
+            if hasattr(team, "stream"):
+                async for chunk in team.stream({"query": prompt}, agent_session=session):
+                    event = parse_runtime_chunk(chunk)
+                    if isinstance(event, DeltaEvent) and event.delta:
+                        text_buf.append(event.delta)
+                    if isinstance(event, DoneEvent):
+                        done_emitted = True
+                        if not event.text:
+                            event = DoneEvent(text="".join(text_buf))
+                    yield event
+            else:
+                # Fallback: run spawn() synchronously and emit a single DoneEvent
+                result = await team.invoke({"query": prompt}, agent_session=session)
+                if isinstance(result, dict):
+                    text = (
+                        result.get("text")
+                        or result.get("content")
+                        or result.get("output", str(result))
+                    )
+                else:
+                    text = str(result)
+                text_buf.append(text)
+                yield DeltaEvent(delta=text)
+
+        except Exception as exc:
+            yield ErrorEvent(message=str(exc))
+            done_emitted = True
+        finally:
+            try:
+                await session.post_run()
+            except Exception:  # noqa: BLE001
+                pass
+
+        if not done_emitted:
+            yield DoneEvent(text="".join(text_buf))
 
     async def send(self, message: str, *, to: Optional[str] = None) -> None:
         team = await self._ensure_team()
