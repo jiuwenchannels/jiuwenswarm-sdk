@@ -1,0 +1,25 @@
+{
+  "name": "@jiuwenswarm/examples-typescript",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TypeScript examples for @jiuwenswarm/sdk",
+  "type": "module",
+  "scripts": {
+    "01": "tsx 01_connect_and_chat.ts",
+    "02": "tsx 02_session_management.ts",
+    "04": "tsx 04_knowledge_base_rest.ts",
+    "05": "tsx 05_reconnect_handling.ts",
+    "06": "tsx 06_tool_call_interception.ts"
+  },
+  "dependencies": {
+    "@jiuwenswarm/sdk": "file:../../packages/sdk",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.0.0",
+    "@types/ws": "^8.5.10",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  }
+}

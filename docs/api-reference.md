@@ -992,17 +992,23 @@ SdkError
 
 ## TypeScript SDK
 
+Package: `@jiuwenswarm/sdk` · `import { JiuwenSwarmClient } from "@jiuwenswarm/sdk"`
+
 ### `JiuwenSwarmClient`
 
 ```typescript
 class JiuwenSwarmClient extends EventEmitter<ClientEvents> {
   constructor(config: ClientConfig)
+  /** Open the WebSocket and complete the connect handshake. */
   connect(): Promise<void>
+  /** Close the WebSocket and cancel any pending reconnect. */
   disconnect(): void
-  get connected(): boolean
+  /** The attached SessionManager (access via client.sessions). */
   readonly sessions: SessionManager
-  send(message: string, options?: SendOptions): Promise<void>
-  sendEnvelope(type: string, payload: unknown): void
+  /** Send a chat message; resolves when the server sends "done". */
+  send(message: string): Promise<void>
+  /** Low-level: send any outbound envelope. */
+  sendEnvelope(envelope: OutboundEnvelope): void
 }
 ```
 
@@ -1010,20 +1016,30 @@ class JiuwenSwarmClient extends EventEmitter<ClientEvents> {
 
 ```typescript
 interface ClientConfig {
+  /** WebSocket URL, e.g. "ws://localhost:19000/v1/ws" */
   url: string;
+  /** Bearer token forwarded in the connect envelope. */
   authToken?: string;
+  /** Called for each streaming token. */
   onToken?: (text: string) => void;
-  onDone?: (sessionId: string) => void;
+  /** Called when the agent finishes; receives the session ID. */
+  onDone?: (sessionId?: string) => void;
+  /** Called when the server sends an error envelope. */
   onError?: (message: string) => void;
+  /**
+   * Called for tool_call envelopes. Return the result string or throw
+   * to send an error. Omit to auto-reject all tool calls.
+   */
   onToolCall?: (call: ToolCallEnvelope) => Promise<string>;
-  reconnect?: ReconnectConfig | false;
+  /** false to disable auto-reconnect; omit for defaults (1→2→5→10→30 s). */
+  reconnect?: false | ReconnectConfig;
 }
 
 interface ReconnectConfig {
-  maxAttempts?: number;
-  initialDelayMs?: number;
-  maxDelayMs?: number;
-  factor?: number;
+  maxAttempts?: number;    // default: Infinity
+  initialDelayMs?: number; // default: 1 000
+  maxDelayMs?: number;     // default: 30 000
+  factor?: number;         // default: 2
 }
 ```
 
@@ -1031,31 +1047,52 @@ interface ReconnectConfig {
 
 ```typescript
 class SessionManager {
+  /** Fetch the session list from the server. */
   list(): Promise<SessionInfo[]>
-  create(title?: string, mode?: AgentMode): Promise<SessionInfo>
+  /** Create a new session and return it. */
+  create(title: string, agentId?: string, mode?: AgentMode): Promise<SessionInfo>
+  /** Mark a session as active; its ID is included in subsequent chat envelopes. */
   setActive(id: string): void
+  /** Re-fetch the session list without changing the active session. */
   refresh(): Promise<void>
+  /** The currently active session, or null. */
   get active(): SessionInfo | null
 }
 ```
 
-### Events
+### `SessionInfo`
+
+```typescript
+interface SessionInfo {
+  id: string;
+  title: string;
+  agent_id: string;
+  mode: "default" | "focused" | "creative";
+  created_at: string; // ISO 8601
+}
+```
+
+### Events emitted by `JiuwenSwarmClient`
 
 ```typescript
 type ClientEvents = {
-  connected:    [];
+  /** Fired when the WebSocket is open and the ack is received. */
+  connected: [];
+  /** Fired when the connection drops for any reason. */
   disconnected: [reason: string];
-  token:        [text: string, sessionId: string];
-  done:         [sessionId: string];
-  error:        [message: string];
+  /** Fired before each reconnect attempt. */
   reconnecting: [attempt: number, delayMs: number];
 }
 ```
+
+`token`, `done`, and `error` are delivered via the `onToken` / `onDone` / `onError`
+callbacks in `ClientConfig`, not as events.
 
 ### `ToolCallEnvelope`
 
 ```typescript
 interface ToolCallEnvelope {
+  type: "tool_call";
   name: string;
   arguments: Record<string, unknown>;
   callId: string;

@@ -1,0 +1,410 @@
+/**
+ * JiuwenSwarmClient — WebSocket client for the JiuwenSwarm gateway.
+ *
+ * ```typescript
+ * const client = new JiuwenSwarmClient({
+ *   url: "ws://localhost:19000/v1/ws",
+ *   onToken: (text) => process.stdout.write(text),
+ *   onDone:  (sessionId) => console.log("\n[done]", sessionId),
+ * });
+ *
+ * await client.connect();
+ * const session = await client.sessions.create("My session");
+ * client.sessions.setActive(session.id);
+ * await client.send("Explain the event loop.");
+ * client.disconnect();
+ * ```
+ */
+import { EventEmitter } from "../events/EventEmitter";
+import { MSG } from "../protocol/constants";
+import type {
+  AckEnvelope,
+  ClientConfig,
+  DoneEnvelope,
+  ErrorEnvelope,
+  InboundEnvelope,
+  OutboundEnvelope,
+  SessionInfo,
+  SessionsEnvelope,
+  SessionCreatedEnvelope,
+  TokenEnvelope,
+  ToolCallEnvelope,
+  AgentMode,
+} from "../protocol/types";
+import { parseEnvelope, ConnectionError } from "../protocol/validate";
+import { ReconnectScheduler } from "./reconnect";
+import { SessionManager, type SessionDelegate } from "../session/SessionManager";
+
+// ---------------------------------------------------------------------------
+// Internal types
+// ---------------------------------------------------------------------------
+
+type ClientEvents = {
+  /** Fired when the WebSocket connection is established and the ack received. */
+  connected: [];
+  /** Fired when the connection drops for any reason. */
+  disconnected: [reason: string];
+  /** Fired before each reconnect attempt. */
+  reconnecting: [attempt: number, delayMs: number];
+};
+
+type Resolver<T> = { resolve: (v: T) => void; reject: (e: unknown) => void };
+
+// ---------------------------------------------------------------------------
+// WebSocket adapter
+// ---------------------------------------------------------------------------
+
+/** Retrieve a WebSocket constructor that works in the current environment. */
+function getWebSocket(): typeof WebSocket {
+  if (typeof globalThis !== "undefined" && typeof (globalThis as { WebSocket?: unknown }).WebSocket === "function") {
+    return (globalThis as { WebSocket: typeof WebSocket }).WebSocket;
+  }
+  // Node.js: attempt to load the optional "ws" peer dependency.
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const ws = require("ws") as { default?: typeof WebSocket } | typeof WebSocket;
+    // Handle both `module.exports = WebSocket` and ESM-interop default
+    return ("default" in ws ? ws.default : ws) as typeof WebSocket;
+  } catch {
+    throw new ConnectionError(
+      "No WebSocket implementation found. " +
+      "In Node.js, install the optional peer dependency: npm install ws",
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Client
+// ---------------------------------------------------------------------------
+
+export class JiuwenSwarmClient
+  extends EventEmitter<ClientEvents>
+  implements SessionDelegate
+{
+  private readonly _config: ClientConfig;
+  private _ws: WebSocket | null = null;
+  private _scheduler: ReconnectScheduler | null = null;
+
+  /** Pending promise for connect() */
+  private _pendingConnect: Resolver<void> | null = null;
+  /** Pending promise for _listSessions() */
+  private _pendingSessions: Resolver<SessionInfo[]> | null = null;
+  /** Pending promise for _createSession() */
+  private _pendingCreate: Resolver<SessionInfo> | null = null;
+  /** Pending promise for send() */
+  private _pendingChat: Resolver<void> | null = null;
+
+  /** Set to true once the connect ack is received. */
+  private _connected = false;
+
+  /** Exposed session manager. */
+  readonly sessions: SessionManager;
+
+  constructor(config: ClientConfig) {
+    super();
+    this._config = config;
+    this.sessions = new SessionManager(this);
+
+    if (config.reconnect !== false) {
+      this._scheduler = new ReconnectScheduler(
+        typeof config.reconnect === "object" ? config.reconnect : {},
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Public API
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Open the WebSocket connection and complete the `connect` handshake.
+   *
+   * Resolves when the server sends an `ack` envelope.
+   * Rejects on connection errors or timeout.
+   */
+  connect(): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      if (this._connected) {
+        resolve();
+        return;
+      }
+      this._pendingConnect = { resolve, reject };
+      this._openSocket();
+    });
+  }
+
+  /**
+   * Close the WebSocket connection and cancel any pending reconnect.
+   * All pending promises are rejected.
+   */
+  disconnect(): void {
+    this._scheduler?.cancel();
+    this._scheduler?.reset();
+    this._closeSocket("client disconnect", false /* no reconnect */);
+  }
+
+  /**
+   * Send a chat message and stream the response.
+   *
+   * Resolves when the server sends the `done` envelope.
+   * Individual tokens are delivered via the `onToken` callback.
+   *
+   * @param message  The user message to send.
+   */
+  send(message: string): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      if (!this._connected || !this._ws) {
+        reject(new ConnectionError("Not connected. Call connect() first."));
+        return;
+      }
+      this._pendingChat = { resolve, reject };
+      this._sendRaw({
+        type: MSG.CHAT,
+        message,
+        session_id: this.sessions.activeId ?? undefined,
+      });
+    });
+  }
+
+  /**
+   * Low-level envelope send.
+   * Serialises `envelope` to JSON and writes it to the WebSocket.
+   */
+  sendEnvelope(envelope: OutboundEnvelope): void {
+    this._sendRaw(envelope);
+  }
+
+  // ---------------------------------------------------------------------------
+  // SessionDelegate implementation (called by SessionManager)
+  // ---------------------------------------------------------------------------
+
+  _listSessions(): Promise<SessionInfo[]> {
+    return new Promise<SessionInfo[]>((resolve, reject) => {
+      if (!this._connected || !this._ws) {
+        reject(new ConnectionError("Not connected."));
+        return;
+      }
+      this._pendingSessions = { resolve, reject };
+      this._sendRaw({ type: MSG.SESSIONS });
+    });
+  }
+
+  _createSession(params: {
+    title?: string;
+    agent_id?: string;
+    mode?: AgentMode;
+  }): Promise<SessionInfo> {
+    return new Promise<SessionInfo>((resolve, reject) => {
+      if (!this._connected || !this._ws) {
+        reject(new ConnectionError("Not connected."));
+        return;
+      }
+      this._pendingCreate = { resolve, reject };
+      this._sendRaw({
+        type: MSG.CREATE_SESSION,
+        title: params.title,
+        agent_id: params.agent_id,
+        mode: params.mode,
+      });
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Internal — socket lifecycle
+  // ---------------------------------------------------------------------------
+
+  private _openSocket(): void {
+    const WS = getWebSocket();
+    const ws = new WS(this._config.url);
+    this._ws = ws;
+
+    ws.onopen = () => {
+      // Send the connect envelope immediately on open.
+      this._sendRaw({
+        type: MSG.CONNECT,
+        client_type: "typescript-sdk",
+        token: this._config.authToken,
+      });
+    };
+
+    ws.onmessage = (event: MessageEvent) => {
+      this._handleMessage(
+        typeof event.data === "string" ? event.data : String(event.data),
+      );
+    };
+
+    ws.onerror = () => {
+      const err = new ConnectionError(`WebSocket error on ${this._config.url}`);
+      this._rejectAllPending(err);
+    };
+
+    ws.onclose = (event: CloseEvent) => {
+      const reason = event.reason || `code ${event.code}`;
+      this._connected = false;
+      this._ws = null;
+      this._rejectAllPending(new ConnectionError(`WebSocket closed: ${reason}`));
+      this.emit("disconnected", reason);
+      this._maybeReconnect();
+    };
+  }
+
+  private _closeSocket(reason: string, shouldReconnect: boolean): void {
+    this._connected = false;
+    if (this._ws) {
+      // Remove handlers before closing to avoid triggering reconnect.
+      this._ws.onclose = null as unknown as typeof this._ws.onclose;
+      this._ws.onerror = null as unknown as typeof this._ws.onerror;
+      this._ws.onmessage = null as unknown as typeof this._ws.onmessage;
+      this._ws.close(1000, reason);
+      this._ws = null;
+    }
+    this._rejectAllPending(new ConnectionError(reason));
+    this.emit("disconnected", reason);
+    if (shouldReconnect) this._maybeReconnect();
+  }
+
+  private _maybeReconnect(): void {
+    if (!this._scheduler) return;
+    const attempt = this._scheduler.attempt;
+    const delayMs = this._scheduler.delayFor(attempt);
+
+    const scheduled = this._scheduler.schedule(() => {
+      this.emit("reconnecting", attempt + 1, delayMs);
+      this.connect().catch(() => {
+        // connect() failure triggers onclose → _maybeReconnect recursion.
+      });
+    });
+
+    if (scheduled) {
+      this.emit("reconnecting", attempt + 1, delayMs);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Internal — message dispatch
+  // ---------------------------------------------------------------------------
+
+  private _handleMessage(raw: string): void {
+    let envelope: InboundEnvelope;
+    try {
+      envelope = parseEnvelope(raw);
+    } catch {
+      // Malformed message — ignore silently in production.
+      return;
+    }
+
+    switch (envelope.type) {
+      case MSG.ACK:
+        this._onAck(envelope as AckEnvelope);
+        break;
+      case MSG.SESSIONS:
+        this._onSessions(envelope as SessionsEnvelope);
+        break;
+      case MSG.SESSION_CREATED:
+        this._onSessionCreated(envelope as SessionCreatedEnvelope);
+        break;
+      case MSG.TOKEN:
+        this._onToken(envelope as TokenEnvelope);
+        break;
+      case MSG.DONE:
+        this._onDone(envelope as DoneEnvelope);
+        break;
+      case MSG.ERROR:
+        this._onError(envelope as ErrorEnvelope);
+        break;
+      case MSG.TOOL_CALL:
+        void this._onToolCall(envelope as ToolCallEnvelope);
+        break;
+    }
+  }
+
+  private _onAck(env: AckEnvelope): void {
+    if (env.protocol_version !== undefined) {
+      // This is the connection handshake ack.
+      this._connected = true;
+      this._scheduler?.reset();
+      const pending = this._pendingConnect;
+      this._pendingConnect = null;
+      pending?.resolve();
+      this.emit("connected");
+    }
+    // Acks sent in response to chat (containing session_id) are intentionally
+    // ignored; the chat operation resolves on "done".
+  }
+
+  private _onSessions(env: SessionsEnvelope): void {
+    this.sessions._updateCache(env.sessions);
+    const pending = this._pendingSessions;
+    this._pendingSessions = null;
+    pending?.resolve(env.sessions);
+  }
+
+  private _onSessionCreated(env: SessionCreatedEnvelope): void {
+    const pending = this._pendingCreate;
+    this._pendingCreate = null;
+    pending?.resolve(env.session);
+  }
+
+  private _onToken(env: TokenEnvelope): void {
+    this._config.onToken?.(env.text);
+  }
+
+  private _onDone(env: DoneEnvelope): void {
+    this._config.onDone?.(env.session_id);
+    const pending = this._pendingChat;
+    this._pendingChat = null;
+    pending?.resolve();
+  }
+
+  private _onError(env: ErrorEnvelope): void {
+    this._config.onError?.(env.message);
+    const err = new Error(env.message);
+    // Reject whichever operation is currently pending.
+    this._rejectAllPending(err);
+  }
+
+  private async _onToolCall(env: ToolCallEnvelope): Promise<void> {
+    if (this._config.onToolCall) {
+      try {
+        const result = await this._config.onToolCall(env);
+        this._sendRaw({ type: "tool_result", callId: env.callId, result });
+      } catch (e) {
+        this._sendRaw({
+          type: "tool_result",
+          callId: env.callId,
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+    } else {
+      // Auto-reject: no handler registered.
+      this._sendRaw({
+        type: "tool_result",
+        callId: env.callId,
+        error: "Tool calls are not supported by this client",
+      });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+
+  private _sendRaw(envelope: object): void {
+    if (!this._ws || this._ws.readyState !== 1 /* OPEN */) return;
+    this._ws.send(JSON.stringify(envelope));
+  }
+
+  private _rejectAllPending(err: unknown): void {
+    const ops = [
+      this._pendingConnect,
+      this._pendingSessions,
+      this._pendingCreate,
+      this._pendingChat,
+    ];
+    this._pendingConnect = null;
+    this._pendingSessions = null;
+    this._pendingCreate = null;
+    this._pendingChat = null;
+    for (const op of ops) op?.reject(err);
+  }
+}

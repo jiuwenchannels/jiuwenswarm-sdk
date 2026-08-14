@@ -1,0 +1,57 @@
+name: CI — Python
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - "openjiuwen/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - ".github/workflows/ci-python.yml"
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - "openjiuwen/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - ".github/workflows/ci-python.yml"
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: ruff check openjiuwen/ tests/
+
+      - name: Format check (ruff)
+        run: ruff format --check openjiuwen/ tests/
+
+      - name: Type check (mypy)
+        run: mypy openjiuwen/ --ignore-missing-imports
+
+      - name: Unit tests
+        run: python -m pytest tests/unit/ -q --tb=short
+
+      - name: System tests
+        if: matrix.python-version == '3.11'
+        run: python -m pytest tests/system/ -q --tb=short
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        continue-on-error: true
