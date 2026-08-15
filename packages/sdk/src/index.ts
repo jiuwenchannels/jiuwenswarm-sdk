@@ -66,6 +66,8 @@ export type {
   MediaItem,
   HistoryPage,
   MemoryStats,
+  MetricsInfo,
+  SessionExport,
   // Envelope unions
   InboundEnvelope,
   OutboundEnvelope,
@@ -90,6 +92,13 @@ export type {
   // Inbound — history and memory
   HistoryLoadedEnvelope,
   MemoryUsageEnvelope,
+  // Inbound — rewind (server push)
+  RewindableEnvelope,
+  RewindDoneEnvelope,
+  // Inbound — export result
+  SessionExportedEnvelope,
+  // Inbound — metrics (periodic server push)
+  MetricsEnvelope,
   // Outbound — core
   ConnectEnvelope,
   SessionsRequestEnvelope,
@@ -112,6 +121,9 @@ export type {
   // Outbound — history and memory
   HistoryGetEnvelope,
   MemoryComputeEnvelope,
+  // Outbound — rewind and export
+  RewindEnvelope,
+  ExportSessionEnvelope,
 } from "./protocol/types";
 
 // AgentMode + ChannelId named constants

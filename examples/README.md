@@ -181,6 +181,7 @@ Require the HTTP gateway (`jiuwenswarm serve`) at `ws://localhost:19000`.
 |------|---------|
 | `advanced/knowledge_base_rest.ts` | Knowledge base query via `fetch` + context injection |
 | `advanced/tool_call_interception.ts` | Client-side tool execution (Geolocation, clipboard) |
+| `advanced/rewind_export.ts` | `rewind()`, `exportSession()`, `on("metrics")`, `options.modelName` per-request model override |
 
 ---
 
@@ -202,6 +203,7 @@ Require the HTTP gateway (`jiuwenswarm serve`) at `http://localhost:19001`.
 |------|---------|
 | `sessions/sessions.sh` | Session list, create, get, delete |
 | `sessions/session_detail.sh` | Rename session, switch session, load paginated history |
+| `sessions/rewind_export.sh` | List rewindable messages, rewind conversation, export as Markdown/JSON, gateway metrics |
 
 ### `agents/` — Agents and models
 
@@ -256,10 +258,12 @@ npx ts-node examples/typescript/core/session_detail.ts
 npx ts-node examples/typescript/streaming/stream_events.ts
 npx ts-node examples/typescript/agents/team_events.ts
 npx ts-node examples/typescript/skills/skills_and_hitl.ts
+npx ts-node examples/typescript/advanced/rewind_export.ts
 
 # Shell / cURL (requires gateway running)
 bash examples/rest/core/health_check.sh
 bash examples/rest/sessions/session_detail.sh
+bash examples/rest/sessions/rewind_export.sh
 bash examples/rest/agents/models.sh
 bash examples/rest/skills/skills.sh
 bash examples/rest/observability/memory_usage.sh

@@ -73,6 +73,22 @@ export const MSG = {
   // Outbound — history and memory
   HISTORY_GET: "history.get",
   MEMORY_COMPUTE: "memory.compute",
+
+  // Inbound — rewind (conversation undo, server push)
+  REWINDABLE: "rewindable",
+  REWIND_DONE: "rewind_done",
+
+  // Inbound — session export result
+  SESSION_EXPORTED: "session_exported",
+
+  // Inbound — gateway metrics (periodic server push)
+  METRICS: "metrics",
+
+  // Outbound — rewind conversation to a previous message
+  REWIND: "rewind",
+
+  // Outbound — request session export
+  EXPORT_SESSION: "session.export",
 } as const;
 
 export type MsgType = (typeof MSG)[keyof typeof MSG];

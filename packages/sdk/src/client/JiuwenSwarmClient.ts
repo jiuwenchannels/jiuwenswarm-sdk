@@ -34,7 +34,13 @@ import type {
   ModelsListEnvelope,
   OutboundEnvelope,
   SessionInfo,
+  MetricsEnvelope,
+  MetricsInfo,
+  RewindableEnvelope,
+  RewindDoneEnvelope,
   SessionDeletedEnvelope,
+  SessionExport,
+  SessionExportedEnvelope,
   SessionRenamedEnvelope,
   SessionSwitchedEnvelope,
   SessionsEnvelope,
@@ -62,6 +68,21 @@ type ClientEvents = {
   disconnected: [reason: string];
   /** Fired before each reconnect attempt. */
   reconnecting: [attempt: number, delayMs: number];
+  /**
+   * Fired when the server pushes gateway-level metrics.
+   * Subscribe: `client.on("metrics", (info) => console.log(info.requests_total))`.
+   */
+  metrics: [info: MetricsInfo];
+  /**
+   * Fired when the server indicates a message is rewindable.
+   * Subscribe: `client.on("rewindable", (messageId) => ...)`.
+   */
+  rewindable: [messageId: string];
+  /**
+   * Fired when a rewind operation completes on the server.
+   * Subscribe: `client.on("rewind_done", (messageId) => ...)`.
+   */
+  rewind_done: [messageId: string];
 };
 
 type Resolver<T> = { resolve: (v: T) => void; reject: (e: unknown) => void };
@@ -104,6 +125,8 @@ export class JiuwenSwarmClient
   implements SessionDelegate
 {
   private readonly _config: ClientConfig;
+  private readonly _rpcMode: boolean;
+  private readonly _rpcChannelId: string;
   private _ws: WebSocket | null = null;
   private _scheduler: ReconnectScheduler | null = null;
 
@@ -133,6 +156,8 @@ export class JiuwenSwarmClient
   private _pendingMemory: Resolver<MemoryStats> | null = null;
   /** Pending promise for sessions.delete() */
   private _pendingDeleteSession: Resolver<string> | null = null;
+  /** Pending promise for exportSession() */
+  private _pendingExport: Resolver<SessionExport> | null = null;
   /** Active streamEvents() generator handle, if any. */
   private _pendingStreamEvents: StreamEventsHandle | null = null;
 
@@ -159,6 +184,8 @@ export class JiuwenSwarmClient
   constructor(config: ClientConfig) {
     super();
     this._config = config;
+    this._rpcMode = config.rpcMode === true;
+    this._rpcChannelId = config.rpcChannelId ?? "ide";
     this.sessions = new SessionManager(this);
 
     if (config.reconnect !== false) {
@@ -230,6 +257,7 @@ export class JiuwenSwarmClient
         mode: options?.mode ?? this._config.mode,
         channel_id: options?.channelId ?? this._config.channelId,
         media_items: options?.mediaItems,
+        model_name: options?.modelName,
       });
     });
   }
@@ -298,6 +326,7 @@ export class JiuwenSwarmClient
       mode: options?.mode ?? this._config.mode,
       channel_id: options?.channelId ?? this._config.channelId,
       media_items: options?.mediaItems,
+      model_name: options?.modelName,
     });
 
     try {
@@ -334,6 +363,68 @@ export class JiuwenSwarmClient
    */
   interrupt(): void {
     this._sendRaw({ type: MSG.INTERRUPT });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Public API — rewind (IDE parity)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Rewind the conversation to a previous message (undo).
+   *
+   * This is a fire-and-forget call.  The server will emit a `rewind_done`
+   * push event when the rewind completes, which the client surfaces as an
+   * `EventEmitter` event:
+   *
+   * ```typescript
+   * client.on("rewind_done", (messageId) => {
+   *   console.log("Rewound to", messageId);
+   * });
+   * client.rewind(); // rewind to last user turn
+   * // or:
+   * client.rewind("msg_abc123"); // rewind to a specific message
+   * ```
+   *
+   * The server also pushes `rewindable` events for eligible messages:
+   * ```typescript
+   * client.on("rewindable", (messageId) => { ... });
+   * ```
+   *
+   * @param messageId  Optional target message ID.  When omitted the server
+   *                   rewinds to the last user turn.
+   */
+  rewind(messageId?: string): void {
+    this._sendRaw({ type: MSG.REWIND, message_id: messageId });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Public API — session export (IDE parity)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Request a full export of a session's conversation.
+   *
+   * ```typescript
+   * const result = await client.exportSession("sess_abc123", "markdown");
+   * if (result.url) {
+   *   console.log("Download:", result.url);
+   * } else if (result.data) {
+   *   fs.writeFileSync("export.md", Buffer.from(result.data, "base64"));
+   * }
+   * ```
+   *
+   * @param sessionId  Session to export.
+   * @param format     `"markdown"` (default), `"json"`, or `"html"`.
+   */
+  exportSession(sessionId: string, format?: string): Promise<SessionExport> {
+    return new Promise<SessionExport>((resolve, reject) => {
+      if (!this._connected || !this._ws) {
+        reject(new ConnectionError("Not connected."));
+        return;
+      }
+      this._pendingExport = { resolve, reject };
+      this._sendRaw({ type: MSG.EXPORT_SESSION, session_id: sessionId, format });
+    });
   }
 
   /**
@@ -615,6 +706,92 @@ export class JiuwenSwarmClient
   }
 
   // ---------------------------------------------------------------------------
+  // Static helpers — RPC mode
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Maps flat envelope `type` strings to the RPC method names used by the
+   * jiuwenswarm-ide correlated-RPC protocol.  Types that already match their
+   * RPC method name (dotted names like `"session.delete"`) are passed through.
+   */
+  private static readonly _RPC_METHOD: Record<string, string> = {
+    connect: "connect",
+    sessions: "session.list",
+    create_session: "session.create",
+    chat: "chat.send",
+    tool_result: "tool.result",
+    skills: "skills.list",
+    skill_toggle: "skills.toggle",
+    hitl_answer: "hitl.answer",
+    "chat.interrupt": "chat.interrupt",
+    "models.list": "models.list",
+    "models.switch": "models.switch",
+    "session.switch": "session.switch",
+    "session.rename": "session.rename",
+    "session.delete": "session.delete",
+    "history.get": "history.get",
+    "memory.compute": "memory.compute",
+    rewind: "session.rewind",
+    "session.export": "session.export",
+  };
+
+  /**
+   * Strips the `type` field from an envelope and renames fields whose names
+   * differ between the flat protocol and the IDE RPC `params` object.
+   *
+   * Known renames:
+   * - `chat` → `message` becomes `content`
+   * - `skill_toggle` → `id` becomes `skill_id`
+   * - `history.get` → `page` becomes `page_idx`
+   */
+  private static _flatToRpcParams(
+    type: string,
+    envelope: object,
+  ): Record<string, unknown> {
+    const { type: _t, ...rest } = envelope as Record<string, unknown>;
+    void _t; // intentionally dropped
+
+    if (type === "chat" && "message" in rest) {
+      const { message, ...remaining } = rest;
+      return { content: message, ...remaining };
+    }
+    if (type === "skill_toggle" && "id" in rest) {
+      const { id, ...remaining } = rest;
+      return { skill_id: id, ...remaining };
+    }
+    if (type === "history.get" && "page" in rest) {
+      const { page, ...remaining } = rest;
+      return { page_idx: page, ...remaining };
+    }
+    return rest;
+  }
+
+  /**
+   * Generate a random correlation ID for RPC envelopes.
+   * Uses `crypto.randomUUID()` when available, otherwise falls back to a
+   * `Math.random()`-based UUID v4.
+   */
+  private static _generateId(): string {
+    if (
+      typeof globalThis !== "undefined" &&
+      typeof (globalThis as { crypto?: { randomUUID?: () => string } }).crypto
+        ?.randomUUID === "function"
+    ) {
+      return (
+        globalThis as { crypto: { randomUUID: () => string } }
+      ).crypto.randomUUID();
+    }
+    // Fallback: RFC-4122 UUID v4 via Math.random()
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(
+      /[xy]/g,
+      (c) => {
+        const r = (Math.random() * 16) | 0;
+        return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+      },
+    );
+  }
+
+  // ---------------------------------------------------------------------------
   // Internal — socket lifecycle
   // ---------------------------------------------------------------------------
 
@@ -690,6 +867,29 @@ export class JiuwenSwarmClient
   // ---------------------------------------------------------------------------
 
   private _handleMessage(raw: string): void {
+    // RPC mode: unwrap {type:"res", id, data} or {type:"res", id, error} before dispatch.
+    if (this._rpcMode) {
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(raw) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+      if (parsed["type"] === "res") {
+        const data = parsed["data"];
+        if (data && typeof data === "object") {
+          // Recurse with the inner data object as if it were a flat envelope.
+          this._handleMessage(JSON.stringify(data));
+        } else if (parsed["error"]) {
+          // Map RPC-level error to a flat error envelope.
+          this._handleMessage(
+            JSON.stringify({ type: "error", message: String(parsed["error"]) }),
+          );
+        }
+        return;
+      }
+    }
+
     let envelope: InboundEnvelope;
     try {
       envelope = parseEnvelope(raw);
@@ -758,6 +958,18 @@ export class JiuwenSwarmClient
         break;
       case MSG.SESSION_DELETED:
         this._onSessionDeleted(envelope as SessionDeletedEnvelope);
+        break;
+      case MSG.REWINDABLE:
+        this._onRewindable(envelope as RewindableEnvelope);
+        break;
+      case MSG.REWIND_DONE:
+        this._onRewindDone(envelope as RewindDoneEnvelope);
+        break;
+      case MSG.SESSION_EXPORTED:
+        this._onSessionExported(envelope as SessionExportedEnvelope);
+        break;
+      case MSG.METRICS:
+        this._onMetrics(envelope as MetricsEnvelope);
         break;
     }
 
@@ -923,12 +1135,59 @@ export class JiuwenSwarmClient
     pending?.resolve(env.session_id);
   }
 
+  private _onRewindable(env: RewindableEnvelope): void {
+    this.emit("rewindable", env.message_id);
+  }
+
+  private _onRewindDone(env: RewindDoneEnvelope): void {
+    this.emit("rewind_done", env.message_id);
+  }
+
+  private _onSessionExported(env: SessionExportedEnvelope): void {
+    const exported: SessionExport = {
+      session_id: env.session_id,
+      url: env.url,
+      data: env.data,
+      format: env.format,
+    };
+    const pending = this._pendingExport;
+    this._pendingExport = null;
+    pending?.resolve(exported);
+  }
+
+  private _onMetrics(env: MetricsEnvelope): void {
+    this.emit("metrics", {
+      requests_total: env.requests_total,
+      tokens_total: env.tokens_total,
+      active_sessions: env.active_sessions,
+      uptime_s: env.uptime_s,
+    });
+  }
+
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 
   private _sendRaw(envelope: object): void {
     if (!this._ws || this._ws.readyState !== 1 /* OPEN */) return;
+
+    if (this._rpcMode) {
+      const type = (envelope as Record<string, unknown>)["type"] as string;
+      const method =
+        JiuwenSwarmClient._RPC_METHOD[type] ?? type;
+      const params = JiuwenSwarmClient._flatToRpcParams(type, envelope);
+      const rpc = {
+        id: JiuwenSwarmClient._generateId(),
+        type: "req",
+        method,
+        params,
+        channel_id: this._rpcChannelId,
+        timestamp: Date.now() / 1000,
+      };
+      this._ws.send(JSON.stringify(rpc));
+      return;
+    }
+
     this._ws.send(JSON.stringify(envelope));
   }
 
@@ -947,6 +1206,7 @@ export class JiuwenSwarmClient
       this._pendingHistory,
       this._pendingMemory,
       this._pendingDeleteSession,
+      this._pendingExport,
     ];
     this._pendingConnect = null;
     this._pendingSessions = null;
@@ -961,6 +1221,7 @@ export class JiuwenSwarmClient
     this._pendingDeleteSession = null;
     this._pendingHistory = null;
     this._pendingMemory = null;
+    this._pendingExport = null;
     for (const op of ops) op?.reject(err);
   }
 }

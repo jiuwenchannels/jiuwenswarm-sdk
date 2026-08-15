@@ -101,6 +101,35 @@ export interface HistoryPage {
   messages: ChatMessage[];
 }
 
+/**
+ * Gateway-level metrics pushed periodically by the server.
+ * Listen via `client.on("metrics", handler)`.
+ */
+export interface MetricsInfo {
+  /** Total WebSocket requests handled since gateway start. */
+  requests_total: number;
+  /** Cumulative token count across all sessions. */
+  tokens_total: number;
+  /** Number of currently connected sessions. */
+  active_sessions: number;
+  /** Gateway uptime in seconds. */
+  uptime_s: number;
+}
+
+/**
+ * The result of an `exportSession()` call.
+ * Contains either a download URL or inline base-64 data.
+ */
+export interface SessionExport {
+  session_id: string;
+  /** Pre-signed download URL (valid for a limited time). */
+  url?: string;
+  /** Inline base-64-encoded export data (for small exports). */
+  data?: string;
+  /** Export format, e.g. `"markdown"`, `"json"`, `"html"`. */
+  format?: string;
+}
+
 /** Process and system memory statistics returned by `getMemoryUsage()`. */
 export interface MemoryStats {
   /** Resident set size of the gateway process in megabytes. */
@@ -234,6 +263,45 @@ export interface SessionDeletedEnvelope {
   session_id: string;
 }
 
+/**
+ * Pushed by the server when a rewind is available for a message.
+ * Received as an `EventEmitter` event: `client.on("rewindable", ...)`.
+ */
+export interface RewindableEnvelope {
+  type: "rewindable";
+  message_id: string;
+}
+
+/**
+ * Pushed by the server when a rewind operation completes.
+ * Received as an `EventEmitter` event: `client.on("rewind_done", ...)`.
+ */
+export interface RewindDoneEnvelope {
+  type: "rewind_done";
+  message_id: string;
+}
+
+/** Delivered in response to an `ExportSessionEnvelope`. */
+export interface SessionExportedEnvelope {
+  type: "session_exported";
+  session_id: string;
+  url?: string;
+  data?: string;
+  format?: string;
+}
+
+/**
+ * Pushed periodically by the server with gateway-level metrics.
+ * Received as an `EventEmitter` event: `client.on("metrics", ...)`.
+ */
+export interface MetricsEnvelope {
+  type: "metrics";
+  requests_total: number;
+  tokens_total: number;
+  active_sessions: number;
+  uptime_s: number;
+}
+
 export type InboundEnvelope =
   | AckEnvelope
   | SessionsEnvelope
@@ -250,7 +318,11 @@ export type InboundEnvelope =
   | SessionRenamedEnvelope
   | HistoryLoadedEnvelope
   | MemoryUsageEnvelope
-  | SessionDeletedEnvelope;
+  | SessionDeletedEnvelope
+  | RewindableEnvelope
+  | RewindDoneEnvelope
+  | SessionExportedEnvelope
+  | MetricsEnvelope;
 
 // ---------------------------------------------------------------------------
 // Outbound envelopes (client → server)
@@ -283,6 +355,11 @@ export interface ChatEnvelope {
   channel_id?: ChannelId;
   /** Optional media attachments (images, audio, files). */
   media_items?: MediaItem[];
+  /**
+   * Override the active LLM model for this single request.
+   * Takes precedence over any session-level model setting.
+   */
+  model_name?: string;
 }
 
 export interface ToolResultEnvelope {
@@ -361,6 +438,23 @@ export interface DeleteSessionEnvelope {
   session_id: string;
 }
 
+/**
+ * Rewind the conversation to a previous message.
+ * If `message_id` is omitted, the server rewinds to the last user turn.
+ */
+export interface RewindEnvelope {
+  type: "rewind";
+  message_id?: string;
+}
+
+/** Request an export of a session's full conversation. */
+export interface ExportSessionEnvelope {
+  type: "session.export";
+  session_id: string;
+  /** Desired format: `"markdown"` (default), `"json"`, `"html"`. */
+  format?: string;
+}
+
 export type OutboundEnvelope =
   | ConnectEnvelope
   | SessionsRequestEnvelope
@@ -377,7 +471,9 @@ export type OutboundEnvelope =
   | RenameSessionEnvelope
   | HistoryGetEnvelope
   | MemoryComputeEnvelope
-  | DeleteSessionEnvelope;
+  | DeleteSessionEnvelope
+  | RewindEnvelope
+  | ExportSessionEnvelope;
 
 // ---------------------------------------------------------------------------
 // Client configuration
@@ -428,6 +524,29 @@ export interface ClientConfig {
    * If omitted, all tool calls are automatically rejected.
    */
   onToolCall?: (call: ToolCallEnvelope) => Promise<string>;
+  /**
+   * Enable the correlated-RPC wire format used by jiuwenswarm-ide.
+   *
+   * When `true` every outbound message is wrapped in:
+   * ```json
+   * { "id": "<uuid>", "type": "req", "method": "<rpc-method>",
+   *   "params": { ...fields }, "channel_id": "ide", "timestamp": 1234.5 }
+   * ```
+   * and inbound `{ "type": "res", "id": "...", "data": {...} }` envelopes
+   * are unwrapped before being dispatched.
+   *
+   * Use this option when the SDK is replacing the transport layer of an IDE
+   * plugin that talks to the gateway via its RPC protocol.
+   *
+   * Default: `false` (flat envelope protocol).
+   */
+  rpcMode?: boolean;
+  /**
+   * Channel identifier inserted into every outbound RPC envelope.
+   * Only used when `rpcMode` is `true`.
+   * Default: `"ide"`.
+   */
+  rpcChannelId?: string;
 }
 
 /** Options for `client.streamEvents()` and `client.send()`. */
@@ -466,4 +585,16 @@ export interface StreamEventsOptions {
    * ```
    */
   mediaItems?: MediaItem[];
+  /**
+   * Override the active LLM model for this single request.
+   * Mirrors the IDE's per-message `model_name` param in `chat.send`.
+   *
+   * @example
+   * ```typescript
+   * for await (const event of client.streamEvents("Summarise this", {
+   *   modelName: "gpt-4o",
+   * })) { ... }
+   * ```
+   */
+  modelName?: string;
 }
