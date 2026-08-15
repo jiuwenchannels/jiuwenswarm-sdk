@@ -17,6 +17,7 @@
  */
 import { EventEmitter } from "../events/EventEmitter";
 import { MSG } from "../protocol/constants";
+import { parseStreamEvent, type StreamEvent } from "../protocol/events";
 import type {
   AckEnvelope,
   ClientConfig,
@@ -27,6 +28,10 @@ import type {
   SessionInfo,
   SessionsEnvelope,
   SessionCreatedEnvelope,
+  SkillInfo,
+  SkillsListEnvelope,
+  SkillToggledEnvelope,
+  StreamEventsOptions,
   TokenEnvelope,
   ToolCallEnvelope,
   AgentMode,
@@ -49,6 +54,12 @@ type ClientEvents = {
 };
 
 type Resolver<T> = { resolve: (v: T) => void; reject: (e: unknown) => void };
+
+/** Internal handle for an active `streamEvents()` generator. */
+type StreamEventsHandle = {
+  push: (event: StreamEvent) => void;
+  finish: (err?: Error) => void;
+};
 
 // ---------------------------------------------------------------------------
 // WebSocket adapter
@@ -93,6 +104,12 @@ export class JiuwenSwarmClient
   private _pendingCreate: Resolver<SessionInfo> | null = null;
   /** Pending promise for send() */
   private _pendingChat: Resolver<void> | null = null;
+  /** Pending promise for listSkills() */
+  private _pendingSkills: Resolver<SkillInfo[]> | null = null;
+  /** Pending promise for toggleSkill() */
+  private _pendingSkillToggle: Resolver<{ id: string; enabled: boolean }> | null = null;
+  /** Active streamEvents() generator handle, if any. */
+  private _pendingStreamEvents: StreamEventsHandle | null = null;
 
   /** Set to true once the connect ack is received. */
   private _connected = false;
@@ -113,7 +130,7 @@ export class JiuwenSwarmClient
   }
 
   // ---------------------------------------------------------------------------
-  // Public API
+  // Public API — connection
   // ---------------------------------------------------------------------------
 
   /**
@@ -143,6 +160,10 @@ export class JiuwenSwarmClient
     this._closeSocket("client disconnect", false /* no reconnect */);
   }
 
+  // ---------------------------------------------------------------------------
+  // Public API — messaging
+  // ---------------------------------------------------------------------------
+
   /**
    * Send a chat message and stream the response.
    *
@@ -162,8 +183,111 @@ export class JiuwenSwarmClient
         type: MSG.CHAT,
         message,
         session_id: this.sessions.activeId ?? undefined,
+        mode: this._config.mode,
+        channel_id: this._config.channelId,
       });
     });
+  }
+
+  /**
+   * Send a chat message and iterate over typed `StreamEvent` objects as they
+   * arrive from the server.
+   *
+   * This is the richer alternative to `send()`.  Instead of delivering tokens
+   * through an `onToken` callback, every protocol event — token deltas,
+   * reasoning steps, tool calls, team events, usage, and done — is exposed as
+   * a strongly-typed `StreamEvent` via an async generator.
+   *
+   * ```typescript
+   * for await (const event of client.streamEvents("Summarise this article")) {
+   *   switch (event.kind) {
+   *     case "delta":     process.stdout.write(event.text); break;
+   *     case "tool_call": console.log("[tool]", event.name); break;
+   *     case "done":      console.log("\n[done]"); break;
+   *   }
+   * }
+   * ```
+   *
+   * @param prompt   The user message to send.
+   * @param options  Optional mode, channelId, contextPrefix, sessionId.
+   */
+  async *streamEvents(
+    prompt: string,
+    options?: StreamEventsOptions,
+  ): AsyncIterable<StreamEvent> {
+    if (!this._connected || !this._ws) {
+      throw new ConnectionError("Not connected. Call connect() first.");
+    }
+
+    const buffer: StreamEvent[] = [];
+    let done = false;
+    let error: Error | null = null;
+    let notify: (() => void) | null = null;
+
+    const push = (event: StreamEvent): void => {
+      buffer.push(event);
+      const fn = notify;
+      notify = null;
+      fn?.();
+    };
+
+    const finish = (err?: Error): void => {
+      done = true;
+      error = err ?? null;
+      const fn = notify;
+      notify = null;
+      fn?.();
+    };
+
+    this._pendingStreamEvents = { push, finish };
+
+    const message = JiuwenSwarmClient._applyContextPrefix(
+      prompt,
+      options?.contextPrefix,
+    );
+
+    this._sendRaw({
+      type: MSG.CHAT,
+      message,
+      session_id: options?.sessionId ?? this.sessions.activeId ?? undefined,
+      mode: options?.mode ?? this._config.mode,
+      channel_id: options?.channelId ?? this._config.channelId,
+    });
+
+    try {
+      while (true) {
+        // Drain buffered events.
+        while (buffer.length > 0) {
+          yield buffer.shift()!;
+        }
+        if (done) {
+          if (error) throw error;
+          break;
+        }
+        // Wait for the next push() or finish() call.
+        await new Promise<void>((resolve) => {
+          notify = resolve;
+        });
+      }
+      // Drain any events that arrived between the final push and the yield.
+      while (buffer.length > 0) {
+        yield buffer.shift()!;
+      }
+    } finally {
+      // Clean up only if this generator is still the active one.
+      if (this._pendingStreamEvents?.finish === finish) {
+        this._pendingStreamEvents = null;
+      }
+    }
+  }
+
+  /**
+   * Fire-and-forget interrupt: ask the server to cancel or pause the current
+   * agent turn.  No response is expected — the next stream event will be an
+   * `ErrorEvent` or `DoneEvent` confirming the cancellation.
+   */
+  interrupt(): void {
+    this._sendRaw({ type: MSG.INTERRUPT });
   }
 
   /**
@@ -172,6 +296,76 @@ export class JiuwenSwarmClient
    */
   sendEnvelope(envelope: OutboundEnvelope): void {
     this._sendRaw(envelope);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Public API — skills (Phase 12)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Fetch the list of installed skills/plugins from the server.
+   *
+   * ```typescript
+   * const skills = await client.listSkills();
+   * skills.forEach(s => console.log(s.name, s.enabled));
+   * ```
+   */
+  listSkills(): Promise<SkillInfo[]> {
+    return new Promise<SkillInfo[]>((resolve, reject) => {
+      if (!this._connected || !this._ws) {
+        reject(new ConnectionError("Not connected."));
+        return;
+      }
+      this._pendingSkills = { resolve, reject };
+      this._sendRaw({ type: MSG.SKILLS });
+    });
+  }
+
+  /**
+   * Enable or disable a skill by its ID.
+   *
+   * ```typescript
+   * await client.toggleSkill("web-search", true);
+   * ```
+   *
+   * @param id       Skill identifier (from `SkillInfo.id`).
+   * @param enabled  `true` to enable, `false` to disable.
+   */
+  toggleSkill(id: string, enabled: boolean): Promise<{ id: string; enabled: boolean }> {
+    return new Promise((resolve, reject) => {
+      if (!this._connected || !this._ws) {
+        reject(new ConnectionError("Not connected."));
+        return;
+      }
+      this._pendingSkillToggle = { resolve, reject };
+      this._sendRaw({ type: MSG.SKILL_TOGGLE, id, enabled });
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Public API — HITL (Phase 12)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Reply to a `confirm_interrupt` event.
+   *
+   * When a `streamEvents()` loop yields a `ConfirmInterruptEvent`, call this
+   * method with the `requestId` from that event and a map of answers.  The
+   * server resumes the agent with the provided answers as additional context.
+   *
+   * ```typescript
+   * for await (const event of client.streamEvents("Analyse this")) {
+   *   if (event.kind === "confirm_interrupt") {
+   *     await client.sendAnswer(event.requestId, { confirm: "yes" });
+   *   }
+   * }
+   * ```
+   *
+   * @param requestId  The `requestId` from the `ConfirmInterruptEvent`.
+   * @param answers    Key/value map of answers to send to the agent.
+   */
+  sendAnswer(requestId: string, answers: Record<string, string>): void {
+    this._sendRaw({ type: MSG.HITL_ANSWER, request_id: requestId, answers });
   }
 
   // ---------------------------------------------------------------------------
@@ -207,6 +401,23 @@ export class JiuwenSwarmClient
         mode: params.mode,
       });
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Static helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Prepend `contextPrefix` to `prompt` with a `\n\n---\n\n` separator.
+   * Returns `prompt` unchanged when `contextPrefix` is absent or empty.
+   *
+   * Mirrors Python SDK's `Agent._apply_context()`.
+   */
+  static _applyContextPrefix(prompt: string, contextPrefix?: string): string {
+    if (!contextPrefix || contextPrefix.trim() === "") {
+      return prompt;
+    }
+    return `${contextPrefix.trimEnd()}\n\n---\n\n${prompt}`;
   }
 
   // ---------------------------------------------------------------------------
@@ -293,6 +504,18 @@ export class JiuwenSwarmClient
       return;
     }
 
+    // Raw envelope view (untyped) used for parseStreamEvent and E2A handling.
+    const rawEnv = envelope as unknown as Record<string, unknown>;
+
+    // Push to the active streamEvents() generator before lifecycle side-effects.
+    if (this._pendingStreamEvents) {
+      const event = parseStreamEvent(rawEnv);
+      if (event !== null) {
+        this._pendingStreamEvents.push(event);
+      }
+    }
+
+    // Typed dispatch for known inbound envelope types.
     switch (envelope.type) {
       case MSG.ACK:
         this._onAck(envelope as AckEnvelope);
@@ -315,6 +538,21 @@ export class JiuwenSwarmClient
       case MSG.TOOL_CALL:
         void this._onToolCall(envelope as ToolCallEnvelope);
         break;
+      case MSG.SKILLS_LIST:
+        this._onSkillsList(envelope as SkillsListEnvelope);
+        break;
+      case MSG.SKILL_TOGGLED:
+        this._onSkillToggled(envelope as SkillToggledEnvelope);
+        break;
+    }
+
+    // E2A lifecycle: "e2a.complete" / "e2a.error" are not part of InboundEnvelope
+    // but must trigger the same done/error lifecycle as their typed equivalents.
+    const rawType = rawEnv["type"] as string;
+    if (rawType === MSG.E2A_COMPLETE) {
+      this._onDone({ type: "done", session_id: rawEnv["session_id"] as string | undefined });
+    } else if (rawType === MSG.E2A_ERROR) {
+      this._onError({ type: "error", message: (rawEnv["message"] as string) ?? "Unknown error" });
     }
   }
 
@@ -347,18 +585,32 @@ export class JiuwenSwarmClient
 
   private _onToken(env: TokenEnvelope): void {
     this._config.onToken?.(env.text);
+    // Token is already forwarded to _pendingStreamEvents via _handleMessage.
   }
 
   private _onDone(env: DoneEnvelope): void {
     this._config.onDone?.(env.session_id);
+    // Resolve the send() promise (if active).
     const pending = this._pendingChat;
     this._pendingChat = null;
     pending?.resolve();
+    // Signal the streamEvents() generator (if active).
+    const se = this._pendingStreamEvents;
+    if (se) {
+      this._pendingStreamEvents = null;
+      se.finish();
+    }
   }
 
   private _onError(env: ErrorEnvelope): void {
     this._config.onError?.(env.message);
     const err = new Error(env.message);
+    // Finish the streamEvents() generator with an error.
+    const se = this._pendingStreamEvents;
+    if (se) {
+      this._pendingStreamEvents = null;
+      se.finish(err);
+    }
     // Reject whichever operation is currently pending.
     this._rejectAllPending(err);
   }
@@ -385,6 +637,18 @@ export class JiuwenSwarmClient
     }
   }
 
+  private _onSkillsList(env: SkillsListEnvelope): void {
+    const pending = this._pendingSkills;
+    this._pendingSkills = null;
+    pending?.resolve(env.skills);
+  }
+
+  private _onSkillToggled(env: SkillToggledEnvelope): void {
+    const pending = this._pendingSkillToggle;
+    this._pendingSkillToggle = null;
+    pending?.resolve({ id: env.id, enabled: env.enabled });
+  }
+
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
@@ -400,11 +664,15 @@ export class JiuwenSwarmClient
       this._pendingSessions,
       this._pendingCreate,
       this._pendingChat,
+      this._pendingSkills,
+      this._pendingSkillToggle,
     ];
     this._pendingConnect = null;
     this._pendingSessions = null;
     this._pendingCreate = null;
     this._pendingChat = null;
+    this._pendingSkills = null;
+    this._pendingSkillToggle = null;
     for (const op of ops) op?.reject(err);
   }
 }

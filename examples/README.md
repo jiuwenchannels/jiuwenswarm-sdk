@@ -142,6 +142,9 @@ Require the HTTP gateway (`jiuwenswarm serve`) at `ws://localhost:19000`.
 | `typescript/04_knowledge_base_rest.ts` | Knowledge base query via `fetch` + context injection |
 | `typescript/05_reconnect_handling.ts` | Automatic exponential back-off and manual reconnect |
 | `typescript/06_tool_call_interception.ts` | Client-side tool execution (Geolocation, clipboard) |
+| `typescript/07_stream_events.ts` | Typed `streamEvents()` — all event kinds, `AgentModeConstants`, `ChannelIdConstants`, `contextPrefix`, `interrupt()` |
+| `typescript/08_team_events.ts` | `TeamEvent` subtypes, `SwarmStateManager` live state tracking |
+| `typescript/09_skills_and_hitl.ts` | `listSkills()`, `toggleSkill()`, `sendAnswer()`, HITL workflow |
 
 ---
 
@@ -175,7 +178,10 @@ python examples/python/optimization/evaluation.py
 python examples/python/infra/gateway_startup.py
 
 # TypeScript (requires ts-node or an ESM runner)
-npx ts-node examples/typescript/connect_and_chat.ts
+npx ts-node examples/typescript/01_connect_and_chat.ts
+npx ts-node examples/typescript/07_stream_events.ts
+npx ts-node examples/typescript/08_team_events.ts
+npx ts-node examples/typescript/09_skills_and_hitl.ts
 
 # Shell / cURL (requires gateway running)
 bash examples/rest/health_check.sh

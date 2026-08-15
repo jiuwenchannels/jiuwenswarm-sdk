@@ -9,7 +9,61 @@
 // Domain types
 // ---------------------------------------------------------------------------
 
-export type AgentMode = "default" | "focused" | "creative";
+/** Agent operating modes, mirroring Python SDK's `AgentMode`. */
+export type AgentMode = "agent" | "code" | "team" | "code.team";
+
+/**
+ * Named constants for agent operating modes.
+ *
+ * @example
+ * ```typescript
+ * import { AgentModeConstants } from "@jiuwenswarm/sdk";
+ * const session = await client.sessions.create("Dev", undefined, AgentModeConstants.CODE);
+ * ```
+ */
+export const AgentModeConstants = {
+  /** Standard conversational agent (default). */
+  AGENT: "agent" as const,
+  /** Code-focused agent with extra IDE context. */
+  CODE: "code" as const,
+  /** Multi-agent team coordinator. */
+  TEAM: "team" as const,
+  /** Code-focused team mode. */
+  CODE_TEAM: "code.team" as const,
+  /** Alias for AGENT. */
+  DEFAULT: "agent" as const,
+} as const;
+
+/** Channel identifiers that tell the server which surface is connecting. */
+export type ChannelId = "api" | "jupyter" | "ide" | "browser" | "cli" | "mobile";
+
+/**
+ * Named constants for channel identifiers, mirroring Python SDK's `ChannelId`.
+ *
+ * @example
+ * ```typescript
+ * import { ChannelIdConstants } from "@jiuwenswarm/sdk";
+ * // passed via streamEvents() options:
+ * client.streamEvents("prompt", { channelId: ChannelIdConstants.IDE });
+ * ```
+ */
+export const ChannelIdConstants = {
+  API: "api" as const,
+  JUPYTER: "jupyter" as const,
+  IDE: "ide" as const,
+  BROWSER: "browser" as const,
+  CLI: "cli" as const,
+  MOBILE: "mobile" as const,
+} as const;
+
+/** Information about an installed skill/plugin. */
+export interface SkillInfo {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  version?: string;
+}
 
 export interface SessionInfo {
   id: string;
@@ -68,6 +122,19 @@ export interface ToolCallEnvelope {
   callId: string;
 }
 
+/** Server response to a `SkillsRequestEnvelope`. */
+export interface SkillsListEnvelope {
+  type: "skills_list";
+  skills: SkillInfo[];
+}
+
+/** Acknowledgment that a skill's enabled state was toggled. */
+export interface SkillToggledEnvelope {
+  type: "skill_toggled";
+  id: string;
+  enabled: boolean;
+}
+
 export type InboundEnvelope =
   | AckEnvelope
   | SessionsEnvelope
@@ -75,7 +142,9 @@ export type InboundEnvelope =
   | TokenEnvelope
   | DoneEnvelope
   | ErrorEnvelope
-  | ToolCallEnvelope;
+  | ToolCallEnvelope
+  | SkillsListEnvelope
+  | SkillToggledEnvelope;
 
 // ---------------------------------------------------------------------------
 // Outbound envelopes (client → server)
@@ -102,6 +171,10 @@ export interface ChatEnvelope {
   type: "chat";
   message: string;
   session_id?: string;
+  /** Agent operating mode for this request. */
+  mode?: AgentMode;
+  /** Channel identifier so the server knows which surface is calling. */
+  channel_id?: ChannelId;
 }
 
 export interface ToolResultEnvelope {
@@ -111,12 +184,43 @@ export interface ToolResultEnvelope {
   error?: string;
 }
 
+/** Request the list of installed skills. */
+export interface SkillsRequestEnvelope {
+  type: "skills";
+}
+
+/** Enable or disable a skill by ID. */
+export interface SkillToggleEnvelope {
+  type: "skill_toggle";
+  id: string;
+  enabled: boolean;
+}
+
+/**
+ * Reply to a `confirm_interrupt` stream event.
+ * Call `client.sendAnswer(requestId, answers)` which sends this envelope.
+ */
+export interface HitlAnswerEnvelope {
+  type: "hitl_answer";
+  request_id: string;
+  answers: Record<string, string>;
+}
+
+/** Fire-and-forget interrupt: cancel or pause the current agent turn. */
+export interface InterruptEnvelope {
+  type: "chat.interrupt";
+}
+
 export type OutboundEnvelope =
   | ConnectEnvelope
   | SessionsRequestEnvelope
   | CreateSessionEnvelope
   | ChatEnvelope
-  | ToolResultEnvelope;
+  | ToolResultEnvelope
+  | SkillsRequestEnvelope
+  | SkillToggleEnvelope
+  | HitlAnswerEnvelope
+  | InterruptEnvelope;
 
 // ---------------------------------------------------------------------------
 // Client configuration
@@ -145,6 +249,16 @@ export interface ClientConfig {
    * - omitted  — use defaults (1 → 2 → 5 → 10 → 30 s, unlimited attempts).
    */
   reconnect?: false | ReconnectConfig;
+  /**
+   * Default agent operating mode sent with every chat/stream request.
+   * Can be overridden per-call via `streamEvents()` options.
+   */
+  mode?: AgentMode;
+  /**
+   * Channel identifier — tells the server which surface is connecting.
+   * Can be overridden per-call via `streamEvents()` options.
+   */
+  channelId?: ChannelId;
   /** Called for each streaming token received from the server. */
   onToken?: (text: string) => void;
   /** Called when the agent finishes a response. */
@@ -157,4 +271,25 @@ export interface ClientConfig {
    * If omitted, all tool calls are automatically rejected.
    */
   onToolCall?: (call: ToolCallEnvelope) => Promise<string>;
+}
+
+/** Options for `client.streamEvents()`. */
+export interface StreamEventsOptions {
+  /**
+   * Agent operating mode for this request.
+   * Overrides `ClientConfig.mode` for this call only.
+   */
+  mode?: AgentMode;
+  /**
+   * Channel identifier for this call.
+   * Overrides `ClientConfig.channelId` for this call only.
+   */
+  channelId?: ChannelId;
+  /**
+   * Optional context prepended to the prompt with a `\n\n---\n\n` separator,
+   * mirroring Python SDK's `context_prefix` parameter.
+   */
+  contextPrefix?: string;
+  /** Explicit session ID to use (defaults to the active session). */
+  sessionId?: string;
 }
