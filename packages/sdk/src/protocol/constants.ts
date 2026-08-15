@@ -62,9 +62,13 @@ export const MSG = {
   MODELS: "models.list",
   SWITCH_MODEL: "models.switch",
 
+  // Inbound — session deleted confirmation
+  SESSION_DELETED: "session_deleted",
+
   // Outbound — session lifecycle
   SWITCH_SESSION: "session.switch",
   RENAME_SESSION: "session.rename",
+  DELETE_SESSION: "session.delete",
 
   // Outbound — history and memory
   HISTORY_GET: "history.get",

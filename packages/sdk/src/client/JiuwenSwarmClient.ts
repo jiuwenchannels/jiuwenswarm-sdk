@@ -34,6 +34,7 @@ import type {
   ModelsListEnvelope,
   OutboundEnvelope,
   SessionInfo,
+  SessionDeletedEnvelope,
   SessionRenamedEnvelope,
   SessionSwitchedEnvelope,
   SessionsEnvelope,
@@ -130,6 +131,8 @@ export class JiuwenSwarmClient
   private _pendingHistory: Resolver<HistoryPage> | null = null;
   /** Pending promise for getMemoryUsage() */
   private _pendingMemory: Resolver<MemoryStats> | null = null;
+  /** Pending promise for sessions.delete() */
+  private _pendingDeleteSession: Resolver<string> | null = null;
   /** Active streamEvents() generator handle, if any. */
   private _pendingStreamEvents: StreamEventsHandle | null = null;
 
@@ -583,6 +586,17 @@ export class JiuwenSwarmClient
     });
   }
 
+  _deleteSession(sessionId: string): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      if (!this._connected || !this._ws) {
+        reject(new ConnectionError("Not connected."));
+        return;
+      }
+      this._pendingDeleteSession = { resolve, reject };
+      this._sendRaw({ type: MSG.DELETE_SESSION, session_id: sessionId });
+    });
+  }
+
   // ---------------------------------------------------------------------------
   // Static helpers
   // ---------------------------------------------------------------------------
@@ -742,6 +756,9 @@ export class JiuwenSwarmClient
       case MSG.MEMORY_USAGE:
         this._onMemoryUsage(envelope as MemoryUsageEnvelope);
         break;
+      case MSG.SESSION_DELETED:
+        this._onSessionDeleted(envelope as SessionDeletedEnvelope);
+        break;
     }
 
     // E2A lifecycle: "e2a.complete" / "e2a.error" are not part of InboundEnvelope
@@ -900,6 +917,12 @@ export class JiuwenSwarmClient
     pending?.resolve(stats);
   }
 
+  private _onSessionDeleted(env: SessionDeletedEnvelope): void {
+    const pending = this._pendingDeleteSession;
+    this._pendingDeleteSession = null;
+    pending?.resolve(env.session_id);
+  }
+
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
@@ -923,6 +946,7 @@ export class JiuwenSwarmClient
       this._pendingRenameSession,
       this._pendingHistory,
       this._pendingMemory,
+      this._pendingDeleteSession,
     ];
     this._pendingConnect = null;
     this._pendingSessions = null;
@@ -934,6 +958,7 @@ export class JiuwenSwarmClient
     this._pendingSwitchModel = null;
     this._pendingSwitchSession = null;
     this._pendingRenameSession = null;
+    this._pendingDeleteSession = null;
     this._pendingHistory = null;
     this._pendingMemory = null;
     for (const op of ops) op?.reject(err);

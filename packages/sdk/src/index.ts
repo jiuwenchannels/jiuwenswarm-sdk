@@ -86,6 +86,7 @@ export type {
   // Inbound — session lifecycle
   SessionSwitchedEnvelope,
   SessionRenamedEnvelope,
+  SessionDeletedEnvelope,
   // Inbound — history and memory
   HistoryLoadedEnvelope,
   MemoryUsageEnvelope,
@@ -107,6 +108,7 @@ export type {
   // Outbound — session lifecycle
   SwitchSessionEnvelope,
   RenameSessionEnvelope,
+  DeleteSessionEnvelope,
   // Outbound — history and memory
   HistoryGetEnvelope,
   MemoryComputeEnvelope,

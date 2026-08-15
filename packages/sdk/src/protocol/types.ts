@@ -228,6 +228,12 @@ export interface MemoryUsageEnvelope {
   context_tokens?: number;
 }
 
+/** Confirmation that a session was successfully deleted. */
+export interface SessionDeletedEnvelope {
+  type: "session_deleted";
+  session_id: string;
+}
+
 export type InboundEnvelope =
   | AckEnvelope
   | SessionsEnvelope
@@ -243,7 +249,8 @@ export type InboundEnvelope =
   | SessionSwitchedEnvelope
   | SessionRenamedEnvelope
   | HistoryLoadedEnvelope
-  | MemoryUsageEnvelope;
+  | MemoryUsageEnvelope
+  | SessionDeletedEnvelope;
 
 // ---------------------------------------------------------------------------
 // Outbound envelopes (client → server)
@@ -348,6 +355,12 @@ export interface MemoryComputeEnvelope {
   type: "memory.compute";
 }
 
+/** Delete an existing session by ID. */
+export interface DeleteSessionEnvelope {
+  type: "session.delete";
+  session_id: string;
+}
+
 export type OutboundEnvelope =
   | ConnectEnvelope
   | SessionsRequestEnvelope
@@ -363,7 +376,8 @@ export type OutboundEnvelope =
   | SwitchSessionEnvelope
   | RenameSessionEnvelope
   | HistoryGetEnvelope
-  | MemoryComputeEnvelope;
+  | MemoryComputeEnvelope
+  | DeleteSessionEnvelope;
 
 // ---------------------------------------------------------------------------
 // Client configuration

@@ -25,6 +25,8 @@ export interface SessionDelegate {
     agent_id?: string;
     mode?: AgentMode;
   }): Promise<SessionInfo>;
+  /** Send a `session.delete` envelope and resolve with the deleted session ID. */
+  _deleteSession(sessionId: string): Promise<string>;
 }
 
 export class SessionManager {
@@ -65,6 +67,22 @@ export class SessionManager {
     });
     this._sessions = [session, ...this._sessions];
     return session;
+  }
+
+  /**
+   * Delete a session on the server and remove it from the local cache.
+   * If the deleted session was active, the active pointer is cleared.
+   *
+   * ```typescript
+   * await client.sessions.delete("sess_abc123");
+   * ```
+   *
+   * @param sessionId  ID of the session to delete.
+   */
+  async delete(sessionId: string): Promise<void> {
+    await this._delegate._deleteSession(sessionId);
+    this._sessions = this._sessions.filter((s) => s.id !== sessionId);
+    if (this._activeId === sessionId) this._activeId = null;
   }
 
   /**
