@@ -45,6 +45,30 @@ export const MSG = {
 
   // Outbound — HITL
   HITL_ANSWER: "hitl_answer",
+
+  // Inbound — models
+  MODELS_LIST: "models_list",
+  MODEL_SWITCHED: "model_switched",
+
+  // Inbound — session lifecycle (rename / switch)
+  SESSION_SWITCHED: "session_switched",
+  SESSION_RENAMED: "session_renamed",
+
+  // Inbound — history and memory
+  HISTORY_LOADED: "history_loaded",
+  MEMORY_USAGE: "memory_usage",
+
+  // Outbound — models
+  MODELS: "models.list",
+  SWITCH_MODEL: "models.switch",
+
+  // Outbound — session lifecycle
+  SWITCH_SESSION: "session.switch",
+  RENAME_SESSION: "session.rename",
+
+  // Outbound — history and memory
+  HISTORY_GET: "history.get",
+  MEMORY_COMPUTE: "memory.compute",
 } as const;
 
 export type MsgType = (typeof MSG)[keyof typeof MSG];

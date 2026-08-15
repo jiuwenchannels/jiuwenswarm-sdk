@@ -14,8 +14,20 @@ examples/
 │   ├── workspace/         Workspace sandbox and diff
 │   ├── infra/             Prompt builder, backends, security, LSP, MCP, gateway
 │   └── advanced/          Multimodal, task-loop hooks, agent builder
-├── typescript/            TypeScript SDK examples (requires gateway)
-└── rest/                  REST / cURL shell scripts (requires gateway)
+├── typescript/
+│   ├── core/              Connect, sessions, models, reconnect
+│   ├── streaming/         Typed stream events, React integration
+│   ├── agents/            Team events, SwarmStateManager
+│   ├── skills/            Skills management, HITL workflow
+│   └── advanced/          Knowledge base, client-side tool execution
+└── rest/
+    ├── core/              Health check, blocking and streaming chat
+    ├── sessions/          Session CRUD, rename, switch, history
+    ├── agents/            Agent run, streaming SSE, models list
+    ├── skills/            List and toggle skills
+    ├── knowledge/         Knowledge base create, ingest, query
+    ├── optimization/      Evaluation batch
+    └── observability/     Memory usage, checkpoints
 ```
 
 ## Prerequisites
@@ -72,8 +84,8 @@ jiuwenswarm serve   # ws://localhost:19000  and  http://localhost:19001
 
 | File | Feature |
 |------|---------|
-| `workflow/advanced.py` | Full workflow DAG with Start/End/LLM/Branch/Loop nodes |
-| `workflow/basic.py` | Workflow DAG — linear, conditional, streaming (simple variant) |
+| `workflow/workflow_advanced.py` | Full workflow DAG with Start/End/LLM/Branch/Loop nodes |
+| `workflow/workflow_basic.py` | Workflow DAG — linear, conditional, streaming (simple variant) |
 | `workflow/sub_workflow.py` | `SubWorkflowComponent`, input/output mapping |
 
 ### `memory/` — Memory and knowledge
@@ -134,17 +146,41 @@ jiuwenswarm serve   # ws://localhost:19000  and  http://localhost:19001
 
 Require the HTTP gateway (`jiuwenswarm serve`) at `ws://localhost:19000`.
 
+### `core/` — Connection and sessions
+
 | File | Feature |
 |------|---------|
-| `typescript/01_connect_and_chat.ts` | Connect via WebSocket and send a chat message |
-| `typescript/02_session_management.ts` | List, resume, and create sessions |
-| `typescript/03_streaming_react.tsx` | React component with streaming token output |
-| `typescript/04_knowledge_base_rest.ts` | Knowledge base query via `fetch` + context injection |
-| `typescript/05_reconnect_handling.ts` | Automatic exponential back-off and manual reconnect |
-| `typescript/06_tool_call_interception.ts` | Client-side tool execution (Geolocation, clipboard) |
-| `typescript/07_stream_events.ts` | Typed `streamEvents()` — all event kinds, `AgentModeConstants`, `ChannelIdConstants`, `contextPrefix`, `interrupt()` |
-| `typescript/08_team_events.ts` | `TeamEvent` subtypes, `SwarmStateManager` live state tracking |
-| `typescript/09_skills_and_hitl.ts` | `listSkills()`, `toggleSkill()`, `sendAnswer()`, HITL workflow |
+| `core/connect_and_chat.ts` | Connect via WebSocket and send a chat message |
+| `core/session_management.ts` | List, resume, and create sessions |
+| `core/session_detail.ts` | Rename session, switch session, load history, expose session ID |
+| `core/models.ts` | `listModels()`, `switchModel()` — discover and switch LLM backends |
+| `core/reconnect_handling.ts` | Automatic exponential back-off and manual reconnect |
+
+### `streaming/` — Typed stream events
+
+| File | Feature |
+|------|---------|
+| `streaming/stream_events.ts` | Typed `streamEvents()` — all event kinds, `AgentModeConstants`, `ChannelIdConstants`, `contextPrefix`, `interrupt()` |
+| `streaming/streaming_react.tsx` | React component with streaming token output |
+
+### `agents/` — Multi-agent coordination
+
+| File | Feature |
+|------|---------|
+| `agents/team_events.ts` | `TeamEvent` subtypes, `SwarmStateManager` live state tracking |
+
+### `skills/` — Skills and HITL
+
+| File | Feature |
+|------|---------|
+| `skills/skills_and_hitl.ts` | `listSkills()`, `toggleSkill()`, `sendAnswer()`, HITL workflow |
+
+### `advanced/` — Advanced integrations
+
+| File | Feature |
+|------|---------|
+| `advanced/knowledge_base_rest.ts` | Knowledge base query via `fetch` + context injection |
+| `advanced/tool_call_interception.ts` | Client-side tool execution (Geolocation, clipboard) |
 
 ---
 
@@ -152,17 +188,53 @@ Require the HTTP gateway (`jiuwenswarm serve`) at `ws://localhost:19000`.
 
 Require the HTTP gateway (`jiuwenswarm serve`) at `http://localhost:19001`.
 
+### `core/` — Basic chat
+
 | File | Feature |
 |------|---------|
-| `rest/01_health_check.sh` | Health probe |
-| `rest/02_sessions.sh` | Session list, create, get, delete |
-| `rest/03_blocking_chat.sh` | Blocking chat — full response in one call |
-| `rest/04_streaming_chat_sse.sh` | Streaming chat via SSE (+ Python httpx snippet) |
-| `rest/05_agents_and_tools.sh` | List agents, run agent, list tools |
-| `rest/06_knowledge_base.sh` | Create KB, add documents, query |
-| `rest/07_eval_batch.sh` | Evaluation batch with metric scores |
-| `rest/08_agent_streaming_sse.sh` | Agent streaming SSE (+ Go snippet) |
-| `rest/09_checkpoint_restore.sh` | Create checkpoint, list, restore, continue |
+| `core/health_check.sh` | Health probe — verify gateway is running |
+| `core/blocking_chat.sh` | Blocking chat — full response in one call |
+| `core/streaming_chat_sse.sh` | Streaming chat via SSE (+ Python httpx snippet) |
+
+### `sessions/` — Session management
+
+| File | Feature |
+|------|---------|
+| `sessions/sessions.sh` | Session list, create, get, delete |
+| `sessions/session_detail.sh` | Rename session, switch session, load paginated history |
+
+### `agents/` — Agents and models
+
+| File | Feature |
+|------|---------|
+| `agents/agents_and_tools.sh` | List agents, run agent, list tools |
+| `agents/agent_streaming_sse.sh` | Agent streaming SSE (+ Go snippet) |
+| `agents/models.sh` | List available LLM models, switch active model |
+
+### `skills/` — Skills management
+
+| File | Feature |
+|------|---------|
+| `skills/skills.sh` | List installed skills, enable/disable a skill |
+
+### `knowledge/` — Knowledge base
+
+| File | Feature |
+|------|---------|
+| `knowledge/knowledge_base.sh` | Create KB, add documents, query |
+
+### `optimization/` — Evaluation
+
+| File | Feature |
+|------|---------|
+| `optimization/eval_batch.sh` | Evaluation batch with metric scores |
+
+### `observability/` — Monitoring and recovery
+
+| File | Feature |
+|------|---------|
+| `observability/checkpoint_restore.sh` | Create checkpoint, list, restore, continue |
+| `observability/memory_usage.sh` | Process and system memory stats, token usage |
 
 ---
 
@@ -172,17 +244,23 @@ Require the HTTP gateway (`jiuwenswarm serve`) at `http://localhost:19001`.
 # Python — run from the repo root
 python examples/python/core/quick_start.py
 python examples/python/agents/stream_events.py
-python examples/python/workflow/advanced.py
+python examples/python/workflow/workflow_advanced.py
 python examples/python/memory/knowledge_base_rag.py
 python examples/python/optimization/evaluation.py
 python examples/python/infra/gateway_startup.py
 
 # TypeScript (requires ts-node or an ESM runner)
-npx ts-node examples/typescript/01_connect_and_chat.ts
-npx ts-node examples/typescript/07_stream_events.ts
-npx ts-node examples/typescript/08_team_events.ts
-npx ts-node examples/typescript/09_skills_and_hitl.ts
+npx ts-node examples/typescript/core/connect_and_chat.ts
+npx ts-node examples/typescript/core/models.ts
+npx ts-node examples/typescript/core/session_detail.ts
+npx ts-node examples/typescript/streaming/stream_events.ts
+npx ts-node examples/typescript/agents/team_events.ts
+npx ts-node examples/typescript/skills/skills_and_hitl.ts
 
 # Shell / cURL (requires gateway running)
-bash examples/rest/health_check.sh
+bash examples/rest/core/health_check.sh
+bash examples/rest/sessions/session_detail.sh
+bash examples/rest/agents/models.sh
+bash examples/rest/skills/skills.sh
+bash examples/rest/observability/memory_usage.sh
 ```

@@ -65,6 +65,54 @@ export interface SkillInfo {
   version?: string;
 }
 
+/** Information about an available LLM model. */
+export interface ModelInfo {
+  id: string;
+  name: string;
+  provider: string;
+  /** Token context window size. */
+  context_length?: number;
+  /** Whether this is the currently active model. */
+  active?: boolean;
+}
+
+/**
+ * A media item attached to a chat message (image, audio, or file).
+ * Mirrors the Python SDK's `MediaItem` / `ImageInput` structures.
+ */
+export interface MediaItem {
+  /** MIME type, e.g. `"image/png"`, `"audio/wav"`, `"application/pdf"`. */
+  mime_type: string;
+  /**
+   * Base-64-encoded content (for small blobs) OR a URL/path the server
+   * can fetch.  Exactly one of `data` or `url` must be provided.
+   */
+  data?: string;
+  url?: string;
+  /** Optional display name / filename shown in the chat UI. */
+  name?: string;
+}
+
+/** A single page of session history messages. */
+export interface HistoryPage {
+  session_id: string;
+  page: number;
+  total_pages: number;
+  messages: ChatMessage[];
+}
+
+/** Process and system memory statistics returned by `getMemoryUsage()`. */
+export interface MemoryStats {
+  /** Resident set size of the gateway process in megabytes. */
+  process_rss_mb: number;
+  /** Total system RAM in megabytes. */
+  system_total_mb: number;
+  /** Free system RAM in megabytes. */
+  system_free_mb: number;
+  /** Approximate token count consumed by the active context window. */
+  context_tokens?: number;
+}
+
 export interface SessionInfo {
   id: string;
   title: string;
@@ -135,6 +183,51 @@ export interface SkillToggledEnvelope {
   enabled: boolean;
 }
 
+/** Server response to a `ModelsRequestEnvelope`. */
+export interface ModelsListEnvelope {
+  type: "models_list";
+  models: ModelInfo[];
+  /** ID of the currently active model. */
+  active_model?: string;
+}
+
+/** Sent by the server after `SwitchModelEnvelope` is processed. */
+export interface ModelSwitchedEnvelope {
+  type: "model_switched";
+  model_id: string;
+}
+
+/** Sent by the server after `SwitchSessionEnvelope` is processed. */
+export interface SessionSwitchedEnvelope {
+  type: "session_switched";
+  session: SessionInfo;
+}
+
+/** Sent by the server after `RenameSessionEnvelope` is processed. */
+export interface SessionRenamedEnvelope {
+  type: "session_renamed";
+  session_id: string;
+  title: string;
+}
+
+/** A page of history messages delivered by the server. */
+export interface HistoryLoadedEnvelope {
+  type: "history_loaded";
+  session_id: string;
+  page: number;
+  total_pages: number;
+  messages: ChatMessage[];
+}
+
+/** Memory statistics delivered in response to `MemoryComputeEnvelope`. */
+export interface MemoryUsageEnvelope {
+  type: "memory_usage";
+  process_rss_mb: number;
+  system_total_mb: number;
+  system_free_mb: number;
+  context_tokens?: number;
+}
+
 export type InboundEnvelope =
   | AckEnvelope
   | SessionsEnvelope
@@ -144,7 +237,13 @@ export type InboundEnvelope =
   | ErrorEnvelope
   | ToolCallEnvelope
   | SkillsListEnvelope
-  | SkillToggledEnvelope;
+  | SkillToggledEnvelope
+  | ModelsListEnvelope
+  | ModelSwitchedEnvelope
+  | SessionSwitchedEnvelope
+  | SessionRenamedEnvelope
+  | HistoryLoadedEnvelope
+  | MemoryUsageEnvelope;
 
 // ---------------------------------------------------------------------------
 // Outbound envelopes (client → server)
@@ -175,6 +274,8 @@ export interface ChatEnvelope {
   mode?: AgentMode;
   /** Channel identifier so the server knows which surface is calling. */
   channel_id?: ChannelId;
+  /** Optional media attachments (images, audio, files). */
+  media_items?: MediaItem[];
 }
 
 export interface ToolResultEnvelope {
@@ -211,6 +312,42 @@ export interface InterruptEnvelope {
   type: "chat.interrupt";
 }
 
+/** Request the list of available LLM models. */
+export interface ModelsRequestEnvelope {
+  type: "models.list";
+}
+
+/** Switch the active LLM model for the current session. */
+export interface SwitchModelEnvelope {
+  type: "models.switch";
+  model_id: string;
+}
+
+/** Switch the active session to an existing one by ID. */
+export interface SwitchSessionEnvelope {
+  type: "session.switch";
+  session_id: string;
+}
+
+/** Rename the active session. */
+export interface RenameSessionEnvelope {
+  type: "session.rename";
+  session_id: string;
+  title: string;
+}
+
+/** Load a page of message history for a session. */
+export interface HistoryGetEnvelope {
+  type: "history.get";
+  session_id: string;
+  page?: number;
+}
+
+/** Request current process and system memory statistics. */
+export interface MemoryComputeEnvelope {
+  type: "memory.compute";
+}
+
 export type OutboundEnvelope =
   | ConnectEnvelope
   | SessionsRequestEnvelope
@@ -220,7 +357,13 @@ export type OutboundEnvelope =
   | SkillsRequestEnvelope
   | SkillToggleEnvelope
   | HitlAnswerEnvelope
-  | InterruptEnvelope;
+  | InterruptEnvelope
+  | ModelsRequestEnvelope
+  | SwitchModelEnvelope
+  | SwitchSessionEnvelope
+  | RenameSessionEnvelope
+  | HistoryGetEnvelope
+  | MemoryComputeEnvelope;
 
 // ---------------------------------------------------------------------------
 // Client configuration
@@ -273,7 +416,7 @@ export interface ClientConfig {
   onToolCall?: (call: ToolCallEnvelope) => Promise<string>;
 }
 
-/** Options for `client.streamEvents()`. */
+/** Options for `client.streamEvents()` and `client.send()`. */
 export interface StreamEventsOptions {
   /**
    * Agent operating mode for this request.
@@ -292,4 +435,21 @@ export interface StreamEventsOptions {
   contextPrefix?: string;
   /** Explicit session ID to use (defaults to the active session). */
   sessionId?: string;
+  /**
+   * Optional media attachments sent alongside the message.
+   * Mirrors Python SDK's `ImageInput` / `AudioInput` support.
+   *
+   * @example
+   * ```typescript
+   * import { readFileSync } from "fs";
+   * await client.send("Describe this image", {
+   *   mediaItems: [{
+   *     mime_type: "image/png",
+   *     data: readFileSync("screenshot.png").toString("base64"),
+   *     name: "screenshot.png",
+   *   }],
+   * });
+   * ```
+   */
+  mediaItems?: MediaItem[];
 }

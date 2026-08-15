@@ -23,9 +23,19 @@ import type {
   ClientConfig,
   DoneEnvelope,
   ErrorEnvelope,
+  HistoryLoadedEnvelope,
+  HistoryPage,
   InboundEnvelope,
+  MediaItem,
+  MemoryStats,
+  MemoryUsageEnvelope,
+  ModelInfo,
+  ModelSwitchedEnvelope,
+  ModelsListEnvelope,
   OutboundEnvelope,
   SessionInfo,
+  SessionRenamedEnvelope,
+  SessionSwitchedEnvelope,
   SessionsEnvelope,
   SessionCreatedEnvelope,
   SkillInfo,
@@ -108,14 +118,40 @@ export class JiuwenSwarmClient
   private _pendingSkills: Resolver<SkillInfo[]> | null = null;
   /** Pending promise for toggleSkill() */
   private _pendingSkillToggle: Resolver<{ id: string; enabled: boolean }> | null = null;
+  /** Pending promise for listModels() */
+  private _pendingModels: Resolver<ModelInfo[]> | null = null;
+  /** Pending promise for switchModel() */
+  private _pendingSwitchModel: Resolver<string> | null = null;
+  /** Pending promise for switchSession() */
+  private _pendingSwitchSession: Resolver<SessionInfo> | null = null;
+  /** Pending promise for renameSession() */
+  private _pendingRenameSession: Resolver<{ session_id: string; title: string }> | null = null;
+  /** Pending promise for getHistory() */
+  private _pendingHistory: Resolver<HistoryPage> | null = null;
+  /** Pending promise for getMemoryUsage() */
+  private _pendingMemory: Resolver<MemoryStats> | null = null;
   /** Active streamEvents() generator handle, if any. */
   private _pendingStreamEvents: StreamEventsHandle | null = null;
 
   /** Set to true once the connect ack is received. */
   private _connected = false;
+  /**
+   * The session ID assigned by the server in the connection ack.
+   * `null` until `connect()` resolves (and the server sends `ack`).
+   */
+  private _sessionId: string | null = null;
 
   /** Exposed session manager. */
   readonly sessions: SessionManager;
+
+  /**
+   * The session ID assigned by the server in the connection acknowledgement.
+   * Available after `connect()` resolves.  Useful when the server auto-creates
+   * a default session on connect.
+   */
+  get sessionId(): string | null {
+    return this._sessionId;
+  }
 
   constructor(config: ClientConfig) {
     super();
@@ -171,20 +207,26 @@ export class JiuwenSwarmClient
    * Individual tokens are delivered via the `onToken` callback.
    *
    * @param message  The user message to send.
+   * @param options  Optional mode, channelId, contextPrefix, sessionId, mediaItems.
    */
-  send(message: string): Promise<void> {
+  send(message: string, options?: StreamEventsOptions): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       if (!this._connected || !this._ws) {
         reject(new ConnectionError("Not connected. Call connect() first."));
         return;
       }
       this._pendingChat = { resolve, reject };
+      const text = JiuwenSwarmClient._applyContextPrefix(
+        message,
+        options?.contextPrefix,
+      );
       this._sendRaw({
         type: MSG.CHAT,
-        message,
-        session_id: this.sessions.activeId ?? undefined,
-        mode: this._config.mode,
-        channel_id: this._config.channelId,
+        message: text,
+        session_id: options?.sessionId ?? this.sessions.activeId ?? undefined,
+        mode: options?.mode ?? this._config.mode,
+        channel_id: options?.channelId ?? this._config.channelId,
+        media_items: options?.mediaItems,
       });
     });
   }
@@ -252,6 +294,7 @@ export class JiuwenSwarmClient
       session_id: options?.sessionId ?? this.sessions.activeId ?? undefined,
       mode: options?.mode ?? this._config.mode,
       channel_id: options?.channelId ?? this._config.channelId,
+      media_items: options?.mediaItems,
     });
 
     try {
@@ -366,6 +409,143 @@ export class JiuwenSwarmClient
    */
   sendAnswer(requestId: string, answers: Record<string, string>): void {
     this._sendRaw({ type: MSG.HITL_ANSWER, request_id: requestId, answers });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Public API — models (IDE parity)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Fetch the list of available LLM models from the server.
+   *
+   * ```typescript
+   * const models = await client.listModels();
+   * models.forEach(m => console.log(m.id, m.active ? "(active)" : ""));
+   * ```
+   */
+  listModels(): Promise<ModelInfo[]> {
+    return new Promise<ModelInfo[]>((resolve, reject) => {
+      if (!this._connected || !this._ws) {
+        reject(new ConnectionError("Not connected."));
+        return;
+      }
+      this._pendingModels = { resolve, reject };
+      this._sendRaw({ type: MSG.MODELS });
+    });
+  }
+
+  /**
+   * Switch the active LLM model for the current session.
+   *
+   * ```typescript
+   * await client.switchModel("gpt-4o");
+   * ```
+   *
+   * @param modelId  Model identifier (from `ModelInfo.id`).
+   */
+  switchModel(modelId: string): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      if (!this._connected || !this._ws) {
+        reject(new ConnectionError("Not connected."));
+        return;
+      }
+      this._pendingSwitchModel = { resolve, reject };
+      this._sendRaw({ type: MSG.SWITCH_MODEL, model_id: modelId });
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Public API — session lifecycle (IDE parity)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Switch the active gateway session to an existing session by ID.
+   *
+   * ```typescript
+   * const session = await client.switchSession("sess_abc123");
+   * client.sessions.setActive(session.id);
+   * ```
+   *
+   * @param sessionId  ID of the session to switch to.
+   */
+  switchSession(sessionId: string): Promise<SessionInfo> {
+    return new Promise<SessionInfo>((resolve, reject) => {
+      if (!this._connected || !this._ws) {
+        reject(new ConnectionError("Not connected."));
+        return;
+      }
+      this._pendingSwitchSession = { resolve, reject };
+      this._sendRaw({ type: MSG.SWITCH_SESSION, session_id: sessionId });
+    });
+  }
+
+  /**
+   * Rename the active session.
+   *
+   * ```typescript
+   * await client.renameSession("sess_abc123", "My research project");
+   * ```
+   *
+   * @param sessionId  Session to rename.
+   * @param title      New human-readable title.
+   */
+  renameSession(
+    sessionId: string,
+    title: string,
+  ): Promise<{ session_id: string; title: string }> {
+    return new Promise((resolve, reject) => {
+      if (!this._connected || !this._ws) {
+        reject(new ConnectionError("Not connected."));
+        return;
+      }
+      this._pendingRenameSession = { resolve, reject };
+      this._sendRaw({ type: MSG.RENAME_SESSION, session_id: sessionId, title });
+    });
+  }
+
+  /**
+   * Load a page of message history for a session.
+   *
+   * ```typescript
+   * const page = await client.getHistory("sess_abc123", 1);
+   * page.messages.forEach(m => console.log(m.role, m.content));
+   * ```
+   *
+   * @param sessionId  Session whose history to load.
+   * @param page       1-based page number (default: 1).
+   */
+  getHistory(sessionId: string, page = 1): Promise<HistoryPage> {
+    return new Promise<HistoryPage>((resolve, reject) => {
+      if (!this._connected || !this._ws) {
+        reject(new ConnectionError("Not connected."));
+        return;
+      }
+      this._pendingHistory = { resolve, reject };
+      this._sendRaw({ type: MSG.HISTORY_GET, session_id: sessionId, page });
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Public API — memory (IDE parity)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Fetch process and system memory statistics from the gateway.
+   *
+   * ```typescript
+   * const stats = await client.getMemoryUsage();
+   * console.log(`RSS: ${stats.process_rss_mb} MB`);
+   * ```
+   */
+  getMemoryUsage(): Promise<MemoryStats> {
+    return new Promise<MemoryStats>((resolve, reject) => {
+      if (!this._connected || !this._ws) {
+        reject(new ConnectionError("Not connected."));
+        return;
+      }
+      this._pendingMemory = { resolve, reject };
+      this._sendRaw({ type: MSG.MEMORY_COMPUTE });
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -544,6 +724,24 @@ export class JiuwenSwarmClient
       case MSG.SKILL_TOGGLED:
         this._onSkillToggled(envelope as SkillToggledEnvelope);
         break;
+      case MSG.MODELS_LIST:
+        this._onModelsList(envelope as ModelsListEnvelope);
+        break;
+      case MSG.MODEL_SWITCHED:
+        this._onModelSwitched(envelope as ModelSwitchedEnvelope);
+        break;
+      case MSG.SESSION_SWITCHED:
+        this._onSessionSwitched(envelope as SessionSwitchedEnvelope);
+        break;
+      case MSG.SESSION_RENAMED:
+        this._onSessionRenamed(envelope as SessionRenamedEnvelope);
+        break;
+      case MSG.HISTORY_LOADED:
+        this._onHistoryLoaded(envelope as HistoryLoadedEnvelope);
+        break;
+      case MSG.MEMORY_USAGE:
+        this._onMemoryUsage(envelope as MemoryUsageEnvelope);
+        break;
     }
 
     // E2A lifecycle: "e2a.complete" / "e2a.error" are not part of InboundEnvelope
@@ -560,6 +758,8 @@ export class JiuwenSwarmClient
     if (env.protocol_version !== undefined) {
       // This is the connection handshake ack.
       this._connected = true;
+      // Persist the server-assigned session ID if present.
+      if (env.session_id) this._sessionId = env.session_id;
       this._scheduler?.reset();
       const pending = this._pendingConnect;
       this._pendingConnect = null;
@@ -649,6 +849,57 @@ export class JiuwenSwarmClient
     pending?.resolve({ id: env.id, enabled: env.enabled });
   }
 
+  private _onModelsList(env: ModelsListEnvelope): void {
+    const pending = this._pendingModels;
+    this._pendingModels = null;
+    pending?.resolve(env.models);
+  }
+
+  private _onModelSwitched(env: ModelSwitchedEnvelope): void {
+    const pending = this._pendingSwitchModel;
+    this._pendingSwitchModel = null;
+    pending?.resolve(env.model_id);
+  }
+
+  private _onSessionSwitched(env: SessionSwitchedEnvelope): void {
+    // Update the session cache and active pointer.
+    this.sessions._updateCache([env.session]);
+    this.sessions.setActive(env.session.id);
+    const pending = this._pendingSwitchSession;
+    this._pendingSwitchSession = null;
+    pending?.resolve(env.session);
+  }
+
+  private _onSessionRenamed(env: SessionRenamedEnvelope): void {
+    const pending = this._pendingRenameSession;
+    this._pendingRenameSession = null;
+    pending?.resolve({ session_id: env.session_id, title: env.title });
+  }
+
+  private _onHistoryLoaded(env: HistoryLoadedEnvelope): void {
+    const page: HistoryPage = {
+      session_id: env.session_id,
+      page: env.page,
+      total_pages: env.total_pages,
+      messages: env.messages,
+    };
+    const pending = this._pendingHistory;
+    this._pendingHistory = null;
+    pending?.resolve(page);
+  }
+
+  private _onMemoryUsage(env: MemoryUsageEnvelope): void {
+    const stats: MemoryStats = {
+      process_rss_mb: env.process_rss_mb,
+      system_total_mb: env.system_total_mb,
+      system_free_mb: env.system_free_mb,
+      context_tokens: env.context_tokens,
+    };
+    const pending = this._pendingMemory;
+    this._pendingMemory = null;
+    pending?.resolve(stats);
+  }
+
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
@@ -666,6 +917,12 @@ export class JiuwenSwarmClient
       this._pendingChat,
       this._pendingSkills,
       this._pendingSkillToggle,
+      this._pendingModels,
+      this._pendingSwitchModel,
+      this._pendingSwitchSession,
+      this._pendingRenameSession,
+      this._pendingHistory,
+      this._pendingMemory,
     ];
     this._pendingConnect = null;
     this._pendingSessions = null;
@@ -673,6 +930,12 @@ export class JiuwenSwarmClient
     this._pendingChat = null;
     this._pendingSkills = null;
     this._pendingSkillToggle = null;
+    this._pendingModels = null;
+    this._pendingSwitchModel = null;
+    this._pendingSwitchSession = null;
+    this._pendingRenameSession = null;
+    this._pendingHistory = null;
+    this._pendingMemory = null;
     for (const op of ops) op?.reject(err);
   }
 }

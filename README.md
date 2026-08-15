@@ -497,7 +497,7 @@ python -m openjiuwen.gateway
 OPENAI_API_KEY=sk-… python examples/python/01_quick_start.py
 
 # TypeScript (requires ts-node or tsx)
-cd packages/sdk && npx tsx ../../examples/typescript/01_connect_and_chat.ts
+cd packages/sdk && npx tsx ../../examples/typescript/connect_and_chat.ts
 
 # REST
 bash examples/rest/01_health_check.sh

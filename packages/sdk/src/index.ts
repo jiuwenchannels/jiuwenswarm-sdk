@@ -52,16 +52,24 @@ export type {
 
 // Protocol types
 export type {
+  // Configuration
   ClientConfig,
   ReconnectConfig,
   StreamEventsOptions,
+  // Domain types
   AgentMode,
   ChannelId,
   SessionInfo,
   ChatMessage,
   SkillInfo,
+  ModelInfo,
+  MediaItem,
+  HistoryPage,
+  MemoryStats,
+  // Envelope unions
   InboundEnvelope,
   OutboundEnvelope,
+  // Inbound — core
   AckEnvelope,
   SessionsEnvelope,
   SessionCreatedEnvelope,
@@ -69,17 +77,39 @@ export type {
   DoneEnvelope,
   ErrorEnvelope,
   ToolCallEnvelope,
+  // Inbound — skills
   SkillsListEnvelope,
   SkillToggledEnvelope,
+  // Inbound — models
+  ModelsListEnvelope,
+  ModelSwitchedEnvelope,
+  // Inbound — session lifecycle
+  SessionSwitchedEnvelope,
+  SessionRenamedEnvelope,
+  // Inbound — history and memory
+  HistoryLoadedEnvelope,
+  MemoryUsageEnvelope,
+  // Outbound — core
   ConnectEnvelope,
   SessionsRequestEnvelope,
   CreateSessionEnvelope,
   ChatEnvelope,
   ToolResultEnvelope,
+  // Outbound — skills
   SkillsRequestEnvelope,
   SkillToggleEnvelope,
+  // Outbound — HITL
   HitlAnswerEnvelope,
   InterruptEnvelope,
+  // Outbound — models
+  ModelsRequestEnvelope,
+  SwitchModelEnvelope,
+  // Outbound — session lifecycle
+  SwitchSessionEnvelope,
+  RenameSessionEnvelope,
+  // Outbound — history and memory
+  HistoryGetEnvelope,
+  MemoryComputeEnvelope,
 } from "./protocol/types";
 
 // AgentMode + ChannelId named constants
