@@ -452,6 +452,7 @@ WebSocket endpoint: `ws://localhost:19000/v1/ws` (protocol version `"1"`)
 
 | Document | Content |
 |----------|---------|
+| [`docs/INSTALLATION.md`](docs/INSTALLATION.md) | Step-by-step install for Python, TypeScript, and REST modes |
 | [`docs/overview.md`](docs/overview.md) | Feature tour with code examples |
 | [`docs/architecture.md`](docs/architecture.md) | System design, bridge pattern, sequence diagrams |
 | [`docs/api-reference.md`](docs/api-reference.md) | Every class, method, and parameter |
