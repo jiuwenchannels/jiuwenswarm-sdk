@@ -5,7 +5,7 @@
  * exponential back-off (1 s → 2 s → 5 s → 10 s → 30 s, capped).
  *
  * Requires: npm install @jiuwenswarm/sdk
- * Gateway:  ws://localhost:19000/v1/ws  (start with `jiuwenswarm serve`)
+ * Gateway:  ws://localhost:19000/ws  (start with `jiuwenswarm serve`)
  */
 
 import { JiuwenSwarmClient } from "@jiuwenswarm/sdk";
@@ -13,7 +13,7 @@ import { JiuwenSwarmClient } from "@jiuwenswarm/sdk";
 // --- Automatic reconnect (default) ----------------------------------------
 
 const client = new JiuwenSwarmClient({
-  url: "ws://localhost:19000/v1/ws",
+  url: "ws://localhost:19000/ws",
   reconnect: {
     maxAttempts: 10,       // stop after 10 failed attempts (default: Infinity)
     initialDelayMs: 1000,
@@ -46,7 +46,7 @@ await client.connect();
 // --- Manual reconnect (opt-out of auto-reconnect) --------------------------
 
 const manualClient = new JiuwenSwarmClient({
-  url: "ws://localhost:19000/v1/ws",
+  url: "ws://localhost:19000/ws",
   reconnect: false,
 });
 

@@ -26,7 +26,7 @@ async function listSkillsDemo(): Promise<void> {
   console.log("=== 1. List installed skills ===\n");
 
   const client = new JiuwenSwarmClient({
-    url: "ws://localhost:19000/v1/ws",
+    url: "ws://localhost:19000/ws",
     reconnect: false,
   });
 
@@ -58,7 +58,7 @@ async function toggleSkillDemo(): Promise<void> {
   console.log("=== 2. Toggle a skill ===\n");
 
   const client = new JiuwenSwarmClient({
-    url: "ws://localhost:19000/v1/ws",
+    url: "ws://localhost:19000/ws",
     reconnect: false,
   });
 
@@ -98,7 +98,7 @@ async function skillGatedChatDemo(): Promise<void> {
   console.log("\n=== 3. Skill-gated chat (enable → chat → disable) ===\n");
 
   const client = new JiuwenSwarmClient({
-    url: "ws://localhost:19000/v1/ws",
+    url: "ws://localhost:19000/ws",
     reconnect: false,
   });
 
@@ -140,7 +140,7 @@ async function hitlAutomatedDemo(): Promise<void> {
   console.log("\n=== 4. HITL — automated answers ===\n");
 
   const client = new JiuwenSwarmClient({
-    url: "ws://localhost:19000/v1/ws",
+    url: "ws://localhost:19000/ws",
     reconnect: false,
   });
 
@@ -199,7 +199,7 @@ async function hitlInteractiveDemo(): Promise<void> {
   console.log("(This demo pauses and waits for your input when the agent asks a question.)\n");
 
   const client = new JiuwenSwarmClient({
-    url: "ws://localhost:19000/v1/ws",
+    url: "ws://localhost:19000/ws",
     reconnect: false,
   });
 
@@ -265,7 +265,7 @@ async function batchSkillConfig(
   console.log("\n=== 6. Batch skill configuration ===\n");
 
   const client = new JiuwenSwarmClient({
-    url: "ws://localhost:19000/v1/ws",
+    url: "ws://localhost:19000/ws",
     reconnect: false,
   });
 

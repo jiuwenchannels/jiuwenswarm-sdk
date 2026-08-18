@@ -69,7 +69,7 @@ function MockWSConstructor(_url: string): MockWebSocket {
 
 function makeClient(overrides: Partial<Parameters<typeof JiuwenSwarmClient>[0]> = {}) {
   return new JiuwenSwarmClient({
-    url: "ws://localhost:19000/v1/ws",
+    url: "ws://localhost:19000/ws",
     reconnect: false, // disable by default to keep tests simple
     ...overrides,
   });
@@ -78,12 +78,32 @@ function makeClient(overrides: Partial<Parameters<typeof JiuwenSwarmClient>[0]> 
 /**
  * Complete the WebSocket handshake:
  *   1. Simulate the socket opening.
- *   2. Return an ack envelope with protocol_version so connect() resolves.
+ *   2. Return the gateway's `connection.ack` event so connect() resolves.
  */
 function completeHandshake(mock: MockWebSocket): void {
   mock.simulateOpen();
   mock.simulateMessage(
-    JSON.stringify({ type: "ack", protocol_version: "1.0" }),
+    JSON.stringify({
+      type: "event",
+      event: "connection.ack",
+      payload: { protocol_version: "1.0" },
+    }),
+  );
+}
+
+/**
+ * Simulate a gateway `res` frame in response to the last sent `req` frame.
+ */
+function respondRes(
+  mock: MockWebSocket,
+  payload: Record<string, unknown> = {},
+  ok = true,
+): void {
+  const id = mock.lastSent().id as string;
+  mock.simulateMessage(
+    JSON.stringify(
+      ok ? { type: "res", id, ok: true, payload } : { type: "res", id, ok: false, error: "fail" },
+    ),
   );
 }
 
@@ -108,48 +128,43 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("connect()", () => {
-  it("resolves when an ack envelope with protocol_version is received", async () => {
+  it("resolves when the gateway connection.ack event is received", async () => {
     const client = makeClient();
     const promise = client.connect();
     completeHandshake(currentMock);
     await expect(promise).resolves.toBeUndefined();
   });
 
-  it("sends a connect envelope immediately on WebSocket open", async () => {
+  it("does not send a request before connection.ack (gateway acks automatically)", async () => {
     const client = makeClient();
     const promise = client.connect();
     currentMock.simulateOpen();
-    const envelope = currentMock.lastSent();
-    expect(envelope.type).toBe("connect");
-    // Finish handshake so the promise settles
+    // The gateway sends connection.ack on its own; the client must not send
+    // anything before that.
+    expect(currentMock.send.mock.calls.length).toBe(0);
     currentMock.simulateMessage(
-      JSON.stringify({ type: "ack", protocol_version: "1.0" }),
+      JSON.stringify({
+        type: "event",
+        event: "connection.ack",
+        payload: { protocol_version: "1.0" },
+      }),
     );
     await promise;
   });
 
-  it("the connect envelope includes client_type", async () => {
+  it("records the server session_id from connection.ack", async () => {
     const client = makeClient();
     const promise = client.connect();
     currentMock.simulateOpen();
-    const envelope = currentMock.lastSent();
-    expect(envelope.client_type).toBe("typescript-sdk");
     currentMock.simulateMessage(
-      JSON.stringify({ type: "ack", protocol_version: "1.0" }),
+      JSON.stringify({
+        type: "event",
+        event: "connection.ack",
+        payload: { protocol_version: "1.0", session_id: "srv-sess-1" },
+      }),
     );
     await promise;
-  });
-
-  it("the connect envelope includes authToken when provided", async () => {
-    const client = makeClient({ authToken: "my-secret-token" });
-    const promise = client.connect();
-    currentMock.simulateOpen();
-    const envelope = currentMock.lastSent();
-    expect(envelope.token).toBe("my-secret-token");
-    currentMock.simulateMessage(
-      JSON.stringify({ type: "ack", protocol_version: "1.0" }),
-    );
-    await promise;
+    expect(client.sessionId).toBe("srv-sess-1");
   });
 
   it("emits connected event on successful connect", async () => {
@@ -185,7 +200,7 @@ describe("connect()", () => {
 // ---------------------------------------------------------------------------
 
 describe("send()", () => {
-  it("sends a {type:'chat', message} envelope", async () => {
+  it("sends a chat.send req with content and query params", async () => {
     const client = makeClient();
     const connectPromise = client.connect();
     completeHandshake(currentMock);
@@ -193,26 +208,35 @@ describe("send()", () => {
 
     const sendPromise = client.send("Hello, agent!");
     const envelope = currentMock.lastSent();
-    expect(envelope.type).toBe("chat");
-    expect(envelope.message).toBe("Hello, agent!");
+    expect(envelope.type).toBe("req");
+    expect(envelope.method).toBe("chat.send");
+    expect(envelope.params).toMatchObject({
+      content: "Hello, agent!",
+      query: "Hello, agent!",
+      mode: "agent",
+    });
 
     // Settle the send promise.
-    currentMock.simulateMessage(JSON.stringify({ type: "done" }));
+    currentMock.simulateMessage(
+      JSON.stringify({ type: "event", event: "chat.final", payload: {} }),
+    );
     await sendPromise;
   });
 
-  it("resolves when a done envelope arrives", async () => {
+  it("resolves when a chat.final event arrives", async () => {
     const client = makeClient();
     const connectPromise = client.connect();
     completeHandshake(currentMock);
     await connectPromise;
 
     const sendPromise = client.send("test");
-    currentMock.simulateMessage(JSON.stringify({ type: "done" }));
+    currentMock.simulateMessage(
+      JSON.stringify({ type: "event", event: "chat.final", payload: {} }),
+    );
     await expect(sendPromise).resolves.toBeUndefined();
   });
 
-  it("onToken callback is called for each token envelope", async () => {
+  it("onToken callback is called for each chat.delta event", async () => {
     const onToken = vi.fn();
     const client = makeClient({ onToken });
     const connectPromise = client.connect();
@@ -220,9 +244,15 @@ describe("send()", () => {
     await connectPromise;
 
     const sendPromise = client.send("stream me");
-    currentMock.simulateMessage(JSON.stringify({ type: "token", text: "Hello" }));
-    currentMock.simulateMessage(JSON.stringify({ type: "token", text: " world" }));
-    currentMock.simulateMessage(JSON.stringify({ type: "done" }));
+    currentMock.simulateMessage(
+      JSON.stringify({ type: "event", event: "chat.delta", payload: { content: "Hello" } }),
+    );
+    currentMock.simulateMessage(
+      JSON.stringify({ type: "event", event: "chat.delta", payload: { content: " world" } }),
+    );
+    currentMock.simulateMessage(
+      JSON.stringify({ type: "event", event: "chat.final", payload: {} }),
+    );
     await sendPromise;
 
     expect(onToken).toHaveBeenCalledTimes(2);
@@ -230,7 +260,7 @@ describe("send()", () => {
     expect(onToken).toHaveBeenNthCalledWith(2, " world");
   });
 
-  it("onDone callback is called with session_id from the done envelope", async () => {
+  it("onDone callback is called with session_id from the chat.final event", async () => {
     const onDone = vi.fn();
     const client = makeClient({ onDone });
     const connectPromise = client.connect();
@@ -239,7 +269,11 @@ describe("send()", () => {
 
     const sendPromise = client.send("hello");
     currentMock.simulateMessage(
-      JSON.stringify({ type: "done", session_id: "sess-abc" }),
+      JSON.stringify({
+        type: "event",
+        event: "chat.final",
+        payload: { session_id: "sess-abc" },
+      }),
     );
     await sendPromise;
 
@@ -247,7 +281,7 @@ describe("send()", () => {
     expect(onDone).toHaveBeenCalledWith("sess-abc");
   });
 
-  it("rejects when an error envelope arrives", async () => {
+  it("rejects when a chat.error event arrives", async () => {
     const client = makeClient();
     const connectPromise = client.connect();
     completeHandshake(currentMock);
@@ -255,7 +289,11 @@ describe("send()", () => {
 
     const sendPromise = client.send("bad message");
     currentMock.simulateMessage(
-      JSON.stringify({ type: "error", message: "Something went wrong" }),
+      JSON.stringify({
+        type: "event",
+        event: "chat.error",
+        payload: { error: "Something went wrong" },
+      }),
     );
     await expect(sendPromise).rejects.toThrow("Something went wrong");
   });
@@ -271,7 +309,7 @@ describe("send()", () => {
 // ---------------------------------------------------------------------------
 
 describe("sessions", () => {
-  it("sessions.list() sends {type:'sessions'} and resolves with the sessions array", async () => {
+  it("sessions.list() sends session.list and resolves with mapped sessions", async () => {
     const client = makeClient();
     const connectPromise = client.connect();
     completeHandshake(currentMock);
@@ -279,20 +317,19 @@ describe("sessions", () => {
 
     const listPromise = client.sessions.list();
     const envelope = currentMock.lastSent();
-    expect(envelope.type).toBe("sessions");
+    expect(envelope.method).toBe("session.list");
 
-    const fakeSessions = [
-      { id: "s1", title: "First", agent_id: "a1", mode: "default", created_at: "" },
-    ];
-    currentMock.simulateMessage(
-      JSON.stringify({ type: "sessions", sessions: fakeSessions }),
-    );
+    respondRes(currentMock, {
+      sessions: [{ session_id: "s1", title: "First", mode: "agent" }],
+    });
 
     const result = await listPromise;
-    expect(result).toEqual(fakeSessions);
+    expect(result).toEqual([
+      { id: "s1", title: "First", agent_id: "", mode: "agent", created_at: "" },
+    ]);
   });
 
-  it("sessions.create(title) sends {type:'create_session', title} and resolves with the new session", async () => {
+  it("sessions.create(title) sends session.create with create_token and resolves with the new session", async () => {
     const client = makeClient();
     const connectPromise = client.connect();
     completeHandshake(currentMock);
@@ -300,25 +337,18 @@ describe("sessions", () => {
 
     const createPromise = client.sessions.create("My Chat");
     const envelope = currentMock.lastSent();
-    expect(envelope.type).toBe("create_session");
-    expect(envelope.title).toBe("My Chat");
+    expect(envelope.method).toBe("session.create");
+    expect(envelope.params).toMatchObject({ title: "My Chat", mode: "agent" });
+    expect(typeof envelope.params.create_token).toBe("string");
 
-    const newSession = {
-      id: "new-s",
-      title: "My Chat",
-      agent_id: "agent-1",
-      mode: "default",
-      created_at: "",
-    };
-    currentMock.simulateMessage(
-      JSON.stringify({ type: "session_created", session: newSession }),
-    );
+    respondRes(currentMock, { session_id: "new-s", title: "My Chat" });
 
     const result = await createPromise;
-    expect(result).toEqual(newSession);
+    expect(result.id).toBe("new-s");
+    expect(result.title).toBe("My Chat");
   });
 
-  it("sessions.setActive(id) makes the chat envelope include session_id", async () => {
+  it("sessions.setActive(id) makes the chat.send params include session_id", async () => {
     const client = makeClient();
     const connectPromise = client.connect();
     completeHandshake(currentMock);
@@ -326,25 +356,20 @@ describe("sessions", () => {
 
     // Populate cache so setActive works end-to-end
     const listPromise = client.sessions.list();
-    const fakeSession = {
-      id: "active-session",
-      title: "Active",
-      agent_id: "a",
-      mode: "default",
-      created_at: "",
-    };
-    currentMock.simulateMessage(
-      JSON.stringify({ type: "sessions", sessions: [fakeSession] }),
-    );
+    respondRes(currentMock, {
+      sessions: [{ session_id: "active-session", title: "Active", mode: "agent" }],
+    });
     await listPromise;
 
     client.sessions.setActive("active-session");
 
     const sendPromise = client.send("hello");
     const chatEnvelope = currentMock.lastSent();
-    expect(chatEnvelope.session_id).toBe("active-session");
+    expect(chatEnvelope.params).toMatchObject({ session_id: "active-session" });
 
-    currentMock.simulateMessage(JSON.stringify({ type: "done" }));
+    currentMock.simulateMessage(
+      JSON.stringify({ type: "event", event: "chat.final", payload: {} }),
+    );
     await sendPromise;
   });
 });
@@ -354,7 +379,7 @@ describe("sessions", () => {
 // ---------------------------------------------------------------------------
 
 describe("tool_call handling", () => {
-  it("when onToolCall is not provided, sends tool_result with error", async () => {
+  it("when onToolCall is not provided, sends tool.result with error", async () => {
     const client = makeClient(); // no onToolCall
     const connectPromise = client.connect();
     completeHandshake(currentMock);
@@ -362,10 +387,9 @@ describe("tool_call handling", () => {
 
     currentMock.simulateMessage(
       JSON.stringify({
-        type: "tool_call",
-        name: "search",
-        arguments: { query: "cats" },
-        callId: "call-1",
+        type: "event",
+        event: "chat.tool_call",
+        payload: { tool_name: "search", arguments: { query: "cats" }, call_id: "call-1" },
       }),
     );
 
@@ -373,13 +397,13 @@ describe("tool_call handling", () => {
     await Promise.resolve();
 
     const envelope = currentMock.lastSent();
-    expect(envelope.type).toBe("tool_result");
-    expect(envelope.callId).toBe("call-1");
-    expect(typeof envelope.error).toBe("string");
-    expect(envelope.result).toBeUndefined();
+    expect(envelope.method).toBe("tool.result");
+    expect(envelope.params).toMatchObject({ call_id: "call-1" });
+    expect(typeof envelope.params.error).toBe("string");
+    expect(envelope.params.result).toBeUndefined();
   });
 
-  it("when onToolCall is provided, its return value is sent as tool_result.result", async () => {
+  it("when onToolCall is provided, its return value is sent as tool.result.result", async () => {
     const onToolCall = vi.fn().mockResolvedValue("search results here");
     const client = makeClient({ onToolCall });
     const connectPromise = client.connect();
@@ -390,28 +414,23 @@ describe("tool_call handling", () => {
 
     mock.simulateMessage(
       JSON.stringify({
-        type: "tool_call",
-        name: "search",
-        arguments: { query: "dogs" },
-        callId: "call-2",
+        type: "event",
+        event: "chat.tool_call",
+        payload: { tool_name: "search", arguments: { query: "dogs" }, call_id: "call-2" },
       }),
     );
 
-    // Flush microtask queue: _onToolCall is async and awaits onToolCall().
-    // One tick to enter _onToolCall, one to resolve the mock promise, one to
-    // resume after the await and call _sendRaw.
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
 
     const envelope = mock.lastSent();
-    expect(envelope.type).toBe("tool_result");
-    expect(envelope.callId).toBe("call-2");
-    expect(envelope.result).toBe("search results here");
-    expect(envelope.error).toBeUndefined();
+    expect(envelope.method).toBe("tool.result");
+    expect(envelope.params).toMatchObject({ call_id: "call-2", result: "search results here" });
+    expect(envelope.params.error).toBeUndefined();
   });
 
-  it("when onToolCall throws, the error message is sent as tool_result.error", async () => {
+  it("when onToolCall throws, the error message is sent as tool.result.error", async () => {
     const onToolCall = vi.fn().mockRejectedValue(new Error("tool failed"));
     const client = makeClient({ onToolCall });
     const connectPromise = client.connect();
@@ -422,23 +441,20 @@ describe("tool_call handling", () => {
 
     mock.simulateMessage(
       JSON.stringify({
-        type: "tool_call",
-        name: "risky_tool",
-        arguments: {},
-        callId: "call-3",
+        type: "event",
+        event: "chat.tool_call",
+        payload: { tool_name: "risky_tool", arguments: {}, call_id: "call-3" },
       }),
     );
 
-    // Same flush: rejection path also needs ~3 microtask ticks.
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
 
     const envelope = mock.lastSent();
-    expect(envelope.type).toBe("tool_result");
-    expect(envelope.callId).toBe("call-3");
-    expect(envelope.error).toBe("tool failed");
-    expect(envelope.result).toBeUndefined();
+    expect(envelope.method).toBe("tool.result");
+    expect(envelope.params).toMatchObject({ call_id: "call-3", error: "tool failed" });
+    expect(envelope.params.result).toBeUndefined();
   });
 });
 

@@ -2,15 +2,14 @@
  * Tests for Phase 12 — skills and HITL.
  *
  * Covers:
- * - client.listSkills() sends {type:"skills"} and resolves with SkillInfo[]
- * - client.toggleSkill(id, enabled) sends {type:"skill_toggle"} and resolves
- * - client.sendAnswer(requestId, answers) sends {type:"hitl_answer"}
+ * - client.listSkills() sends skills.list and resolves with SkillInfo[]
+ * - client.toggleSkill(id, enabled) sends skills.toggle and resolves
+ * - client.sendAnswer(requestId, answers) sends chat.user_answer
  * - ConfirmInterruptEvent flows through streamEvents()
  * - listSkills/toggleSkill reject when not connected
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { JiuwenSwarmClient } from "../src/client/JiuwenSwarmClient";
-import { MSG } from "../src/protocol/constants";
 import type { SkillInfo } from "../src/protocol/types";
 
 // ---------------------------------------------------------------------------
@@ -50,14 +49,26 @@ function MockWSConstructor(_url: string): MockWebSocket {
 
 function makeClient() {
   return new JiuwenSwarmClient({
-    url: "ws://localhost:19000/v1/ws",
+    url: "ws://localhost:19000/ws",
     reconnect: false,
   });
 }
 
 function completeHandshake(mock: MockWebSocket): void {
   mock.simulateOpen();
-  mock.simulateMessage(JSON.stringify({ type: "ack", protocol_version: "1.0" }));
+  mock.simulateMessage(
+    JSON.stringify({
+      type: "event",
+      event: "connection.ack",
+      payload: { protocol_version: "1.0" },
+    }),
+  );
+}
+
+/** Respond to the last sent req with a res frame. */
+function respondRes(mock: MockWebSocket, payload: Record<string, unknown> = {}): void {
+  const id = mock.lastSent().id as string;
+  mock.simulateMessage(JSON.stringify({ type: "res", id, ok: true, payload }));
 }
 
 beforeEach(() => {
@@ -73,7 +84,7 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("client.listSkills()", () => {
-  it("sends {type:'skills'} envelope", async () => {
+  it("sends a skills.list req", async () => {
     const client = makeClient();
     const connectPromise = client.connect();
     completeHandshake(currentMock);
@@ -81,10 +92,10 @@ describe("client.listSkills()", () => {
 
     void client.listSkills(); // fire without await, just to inspect the sent envelope
     const envelope = currentMock.lastSent();
-    expect(envelope.type).toBe(MSG.SKILLS);
+    expect(envelope.method).toBe("skills.list");
   });
 
-  it("resolves with the skills array from skills_list envelope", async () => {
+  it("resolves with the skills array from the res payload", async () => {
     const client = makeClient();
     const connectPromise = client.connect();
     completeHandshake(currentMock);
@@ -92,14 +103,12 @@ describe("client.listSkills()", () => {
 
     const listPromise = client.listSkills();
 
-    const fakeSkills: SkillInfo[] = [
-      { id: "web-search", name: "Web Search", description: "Search the web", enabled: true },
-      { id: "code-exec", name: "Code Executor", description: "Run code", enabled: false },
+    const rawSkills = [
+      { skill_id: "web-search", name: "Web Search", description: "Search the web", enabled: true },
+      { skill_id: "code-exec", name: "Code Executor", description: "Run code", enabled: false },
     ];
 
-    currentMock.simulateMessage(
-      JSON.stringify({ type: "skills_list", skills: fakeSkills }),
-    );
+    respondRes(currentMock, { skills: rawSkills });
 
     const result = await listPromise;
     expect(result).toHaveLength(2);
@@ -117,32 +126,10 @@ describe("client.listSkills()", () => {
     await connectPromise;
 
     const listPromise = client.listSkills();
-    currentMock.simulateMessage(JSON.stringify({ type: "skills_list", skills: [] }));
+    respondRes(currentMock, { skills: [] });
 
     const result = await listPromise;
     expect(result).toEqual([]);
-  });
-
-  it("resolves with optional version field when present", async () => {
-    const client = makeClient();
-    const connectPromise = client.connect();
-    completeHandshake(currentMock);
-    await connectPromise;
-
-    const listPromise = client.listSkills();
-    const skills: SkillInfo[] = [
-      {
-        id: "web-search",
-        name: "Web Search",
-        description: "Search",
-        enabled: true,
-        version: "2.1.0",
-      },
-    ];
-    currentMock.simulateMessage(JSON.stringify({ type: "skills_list", skills }));
-
-    const result = await listPromise;
-    expect(result[0].version).toBe("2.1.0");
   });
 
   it("rejects when not connected", async () => {
@@ -156,7 +143,7 @@ describe("client.listSkills()", () => {
 // ---------------------------------------------------------------------------
 
 describe("client.toggleSkill()", () => {
-  it("sends {type:'skill_toggle', id, enabled:true} envelope", async () => {
+  it("sends skills.toggle with skill_id and enabled:true", async () => {
     const client = makeClient();
     const connectPromise = client.connect();
     completeHandshake(currentMock);
@@ -164,12 +151,11 @@ describe("client.toggleSkill()", () => {
 
     void client.toggleSkill("web-search", true);
     const envelope = currentMock.lastSent();
-    expect(envelope.type).toBe(MSG.SKILL_TOGGLE);
-    expect(envelope.id).toBe("web-search");
-    expect(envelope.enabled).toBe(true);
+    expect(envelope.method).toBe("skills.toggle");
+    expect(envelope.params).toMatchObject({ skill_id: "web-search", enabled: true });
   });
 
-  it("sends {type:'skill_toggle', id, enabled:false} envelope", async () => {
+  it("sends skills.toggle with skill_id and enabled:false", async () => {
     const client = makeClient();
     const connectPromise = client.connect();
     completeHandshake(currentMock);
@@ -177,21 +163,18 @@ describe("client.toggleSkill()", () => {
 
     void client.toggleSkill("code-exec", false);
     const envelope = currentMock.lastSent();
-    expect(envelope.type).toBe(MSG.SKILL_TOGGLE);
-    expect(envelope.id).toBe("code-exec");
-    expect(envelope.enabled).toBe(false);
+    expect(envelope.method).toBe("skills.toggle");
+    expect(envelope.params).toMatchObject({ skill_id: "code-exec", enabled: false });
   });
 
-  it("resolves with {id, enabled} from the skill_toggled envelope", async () => {
+  it("resolves with {id, enabled} when the res frame arrives", async () => {
     const client = makeClient();
     const connectPromise = client.connect();
     completeHandshake(currentMock);
     await connectPromise;
 
     const togglePromise = client.toggleSkill("web-search", true);
-    currentMock.simulateMessage(
-      JSON.stringify({ type: "skill_toggled", id: "web-search", enabled: true }),
-    );
+    respondRes(currentMock, {});
 
     const result = await togglePromise;
     expect(result).toEqual({ id: "web-search", enabled: true });
@@ -204,9 +187,7 @@ describe("client.toggleSkill()", () => {
     await connectPromise;
 
     const togglePromise = client.toggleSkill("code-exec", false);
-    currentMock.simulateMessage(
-      JSON.stringify({ type: "skill_toggled", id: "code-exec", enabled: false }),
-    );
+    respondRes(currentMock, {});
 
     const result = await togglePromise;
     expect(result.id).toBe("code-exec");
@@ -224,7 +205,7 @@ describe("client.toggleSkill()", () => {
 // ---------------------------------------------------------------------------
 
 describe("client.sendAnswer()", () => {
-  it("sends {type:'hitl_answer', request_id, answers} envelope", async () => {
+  it("sends a chat.user_answer req with request_id and answers", async () => {
     const client = makeClient();
     const connectPromise = client.connect();
     completeHandshake(currentMock);
@@ -232,9 +213,11 @@ describe("client.sendAnswer()", () => {
 
     client.sendAnswer("req-42", { confirm: "yes", reason: "looks correct" });
     const envelope = currentMock.lastSent();
-    expect(envelope.type).toBe(MSG.HITL_ANSWER);
-    expect(envelope.request_id).toBe("req-42");
-    expect(envelope.answers).toEqual({ confirm: "yes", reason: "looks correct" });
+    expect(envelope.method).toBe("chat.user_answer");
+    expect(envelope.params).toMatchObject({
+      request_id: "req-42",
+      answers: { confirm: "yes", reason: "looks correct" },
+    });
   });
 
   it("sends an empty answers map", async () => {
@@ -245,7 +228,7 @@ describe("client.sendAnswer()", () => {
 
     client.sendAnswer("req-1", {});
     const envelope = currentMock.lastSent();
-    expect(envelope.answers).toEqual({});
+    expect(envelope.params).toMatchObject({ answers: {} });
   });
 
   it("is fire-and-forget — does not throw when not connected", () => {
@@ -282,14 +265,16 @@ describe("ConfirmInterruptEvent through client.streamEvents()", () => {
 
     currentMock.simulateMessage(
       JSON.stringify({
-        type: "confirm_interrupt",
-        request_id: "req-99",
-        question: "This may be sensitive. Continue?",
+        type: "event",
+        event: "chat.ask_user_question",
+        payload: { request_id: "req-99", question: "This may be sensitive. Continue?" },
       }),
     );
     // After the user answers, the server sends more content and finishes.
-    currentMock.simulateMessage(JSON.stringify({ type: "token", text: "Analysis..." }));
-    currentMock.simulateMessage(JSON.stringify({ type: "done" }));
+    currentMock.simulateMessage(
+      JSON.stringify({ type: "event", event: "chat.delta", payload: { content: "Analysis..." } }),
+    );
+    currentMock.simulateMessage(JSON.stringify({ type: "event", event: "chat.final", payload: {} }));
 
     await iterPromise;
 
@@ -317,20 +302,26 @@ describe("ConfirmInterruptEvent through client.streamEvents()", () => {
     await Promise.resolve();
 
     currentMock.simulateMessage(
-      JSON.stringify({ type: "confirm_interrupt", request_id: "rq-1", question: "Proceed?" }),
+      JSON.stringify({
+        type: "event",
+        event: "chat.ask_user_question",
+        payload: { request_id: "rq-1", question: "Proceed?" },
+      }),
     );
-    currentMock.simulateMessage(JSON.stringify({ type: "done" }));
+    currentMock.simulateMessage(JSON.stringify({ type: "event", event: "chat.final", payload: {} }));
 
     await iterPromise;
 
-    // Find the hitl_answer envelope in sent messages
+    // Find the chat.user_answer req in sent messages
     const sentMessages = currentMock.send.mock.calls
       .map((call) => JSON.parse(call[0]) as Record<string, unknown>)
-      .filter((m) => m.type === "hitl_answer");
+      .filter((m) => m.method === "chat.user_answer");
 
     expect(sentMessages.length).toBeGreaterThanOrEqual(1);
-    expect(sentMessages[0].request_id).toBe("rq-1");
-    expect(sentMessages[0].answers).toEqual({ choice: "yes" });
+    expect(sentMessages[0].params).toMatchObject({
+      request_id: "rq-1",
+      answers: { choice: "yes" },
+    });
   });
 });
 
@@ -339,7 +330,7 @@ describe("ConfirmInterruptEvent through client.streamEvents()", () => {
 // ---------------------------------------------------------------------------
 
 describe("skills — rejected when connection closes", () => {
-  it("listSkills() rejects when the WebSocket closes before skills_list arrives", async () => {
+  it("listSkills() rejects when the WebSocket closes before the res arrives", async () => {
     const client = makeClient();
     const connectPromise = client.connect();
     completeHandshake(currentMock);
@@ -350,7 +341,7 @@ describe("skills — rejected when connection closes", () => {
     await expect(listPromise).rejects.toThrow();
   });
 
-  it("toggleSkill() rejects when the WebSocket closes before skill_toggled arrives", async () => {
+  it("toggleSkill() rejects when the WebSocket closes before the res arrives", async () => {
     const client = makeClient();
     const connectPromise = client.connect();
     completeHandshake(currentMock);

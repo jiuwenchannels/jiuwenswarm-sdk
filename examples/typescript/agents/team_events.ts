@@ -48,7 +48,7 @@ async function basicTeamStream(): Promise<void> {
   console.log("=== 1. Basic team stream ===\n");
 
   const client = new JiuwenSwarmClient({
-    url: "ws://localhost:19000/v1/ws",
+    url: "ws://localhost:19000/ws",
     reconnect: false,
   });
 
@@ -137,7 +137,7 @@ async function swarmStateManagerDemo(): Promise<void> {
   console.log("\n=== 2. SwarmStateManager ===\n");
 
   const client = new JiuwenSwarmClient({
-    url: "ws://localhost:19000/v1/ws",
+    url: "ws://localhost:19000/ws",
     reconnect: false,
   });
 
@@ -231,7 +231,7 @@ async function resetAndReuseDemo(): Promise<void> {
   console.log("\n=== 3. Reset and reuse SwarmStateManager ===\n");
 
   const client = new JiuwenSwarmClient({
-    url: "ws://localhost:19000/v1/ws",
+    url: "ws://localhost:19000/ws",
     reconnect: false,
   });
 

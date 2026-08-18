@@ -28,7 +28,7 @@ async function basicStreamEvents(): Promise<void> {
   console.log("=== 1. Basic stream events ===\n");
 
   const client = new JiuwenSwarmClient({
-    url: "ws://localhost:19000/v1/ws",
+    url: "ws://localhost:19000/ws",
     reconnect: false,
   });
 
@@ -92,7 +92,7 @@ async function modeAndChannelExample(): Promise<void> {
   console.log("\n=== 2. AgentMode + ChannelId ===\n");
 
   const client = new JiuwenSwarmClient({
-    url: "ws://localhost:19000/v1/ws",
+    url: "ws://localhost:19000/ws",
     // Set defaults at the client level.
     mode: AgentModeConstants.CODE,
     channelId: ChannelIdConstants.IDE,
@@ -129,7 +129,7 @@ async function contextPrefixExample(): Promise<void> {
   console.log("\n=== 3. context_prefix injection ===\n");
 
   const client = new JiuwenSwarmClient({
-    url: "ws://localhost:19000/v1/ws",
+    url: "ws://localhost:19000/ws",
     reconnect: false,
   });
 
@@ -179,7 +179,7 @@ async function interruptExample(): Promise<void> {
   console.log("\n=== 4. interrupt() mid-stream ===\n");
 
   const client = new JiuwenSwarmClient({
-    url: "ws://localhost:19000/v1/ws",
+    url: "ws://localhost:19000/ws",
     reconnect: false,
   });
 
@@ -218,7 +218,7 @@ async function collectAllEvents(): Promise<void> {
   console.log("\n=== 5. Collect all events ===\n");
 
   const client = new JiuwenSwarmClient({
-    url: "ws://localhost:19000/v1/ws",
+    url: "ws://localhost:19000/ws",
     reconnect: false,
   });
 

@@ -9,13 +9,13 @@
  *   - client.getMemoryUsage()   → gateway process and system memory stats
  *
  * Requires: npm install @jiuwenswarm/sdk
- * Gateway:  ws://localhost:19000/v1/ws  (start with `jiuwenswarm serve`)
+ * Gateway:  ws://localhost:19000/ws  (start with `jiuwenswarm serve`)
  */
 
 import { JiuwenSwarmClient } from "@jiuwenswarm/sdk";
 
 const client = new JiuwenSwarmClient({
-  url: "ws://localhost:19000/v1/ws",
+  url: "ws://localhost:19000/ws",
   onToken: (text) => process.stdout.write(text),
   onDone: () => console.log("\n"),
 });

@@ -13,7 +13,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { parseStreamEvent } from "../src/protocol/events";
 import { AgentModeConstants, ChannelIdConstants } from "../src/protocol/types";
 import { JiuwenSwarmClient } from "../src/client/JiuwenSwarmClient";
-import { MSG } from "../src/protocol/constants";
 
 // ---------------------------------------------------------------------------
 // MockWebSocket (shared with client.test.ts pattern)
@@ -61,7 +60,18 @@ function makeClient(overrides: Partial<Parameters<typeof JiuwenSwarmClient>[0]> 
 
 function completeHandshake(mock: MockWebSocket): void {
   mock.simulateOpen();
-  mock.simulateMessage(JSON.stringify({ type: "ack", protocol_version: "1.0" }));
+  mock.simulateMessage(
+    JSON.stringify({
+      type: "event",
+      event: "connection.ack",
+      payload: { protocol_version: "1.0" },
+    }),
+  );
+}
+
+/** Shorthand for a gateway event frame. */
+function eventFrame(event: string, payload: Record<string, unknown> = {}): string {
+  return JSON.stringify({ type: "event", event, payload });
 }
 
 beforeEach(() => {
@@ -426,12 +436,12 @@ describe("client.streamEvents()", () => {
       }
     })();
 
-    // Flush microtasks so the generator sends the CHAT envelope.
+    // Flush microtasks so the generator sends the CHAT req.
     await Promise.resolve();
 
-    currentMock.simulateMessage(JSON.stringify({ type: "token", text: "Once" }));
-    currentMock.simulateMessage(JSON.stringify({ type: "token", text: " upon" }));
-    currentMock.simulateMessage(JSON.stringify({ type: "done" }));
+    currentMock.simulateMessage(eventFrame("chat.delta", { content: "Once" }));
+    currentMock.simulateMessage(eventFrame("chat.delta", { content: " upon" }));
+    currentMock.simulateMessage(eventFrame("chat.final"));
 
     await iterPromise;
 
@@ -455,8 +465,8 @@ describe("client.streamEvents()", () => {
 
     await Promise.resolve();
 
-    currentMock.simulateMessage(JSON.stringify({ type: "token", text: "Hi" }));
-    currentMock.simulateMessage(JSON.stringify({ type: "done", session_id: "s1" }));
+    currentMock.simulateMessage(eventFrame("chat.delta", { content: "Hi" }));
+    currentMock.simulateMessage(eventFrame("chat.final", { session_id: "s1" }));
 
     await iterPromise;
 
@@ -480,7 +490,7 @@ describe("client.streamEvents()", () => {
     })();
 
     await Promise.resolve();
-    currentMock.simulateMessage(JSON.stringify({ type: "done", session_id: "my-session" }));
+    currentMock.simulateMessage(eventFrame("chat.final", { session_id: "my-session" }));
     await iterPromise;
 
     expect(doneEvent).not.toBeNull();
@@ -504,10 +514,10 @@ describe("client.streamEvents()", () => {
 
     await Promise.resolve();
 
-    // An error envelope is pushed as an ErrorEvent to the generator buffer,
+    // A chat.error event is pushed as an ErrorEvent to the generator buffer,
     // then finish(err) is called. The generator yields the ErrorEvent then
     // throws when it sees error is set after the buffer drains.
-    currentMock.simulateMessage(JSON.stringify({ type: "error", message: "Server overload" }));
+    currentMock.simulateMessage(eventFrame("chat.error", { error: "Server overload" }));
 
     await expect(iterPromise).rejects.toThrow("Server overload");
     // The ErrorEvent was yielded before the throw.
@@ -522,7 +532,7 @@ describe("client.streamEvents()", () => {
     await expect(gen.next()).rejects.toThrow("Not connected");
   });
 
-  it("sends a chat envelope with the prompt", async () => {
+  it("sends a chat.send req with the prompt", async () => {
     const client = makeClient();
     const connectPromise = client.connect();
     completeHandshake(currentMock);
@@ -534,16 +544,17 @@ describe("client.streamEvents()", () => {
     await Promise.resolve();
 
     const chatEnvelope = currentMock.lastSent();
-    expect(chatEnvelope.type).toBe("chat");
-    expect(chatEnvelope.message).toBe("What is TypeScript?");
+    expect(chatEnvelope.type).toBe("req");
+    expect(chatEnvelope.method).toBe("chat.send");
+    expect(chatEnvelope.params).toMatchObject({ content: "What is TypeScript?" });
 
     // Finish the generator to avoid hanging
-    currentMock.simulateMessage(JSON.stringify({ type: "done" }));
+    currentMock.simulateMessage(eventFrame("chat.final"));
     await nextPromise;
     await gen.return(undefined);
   });
 
-  it("applies contextPrefix to the prompt in the chat envelope", async () => {
+  it("applies contextPrefix to the prompt in the chat.send params", async () => {
     const client = makeClient();
     const connectPromise = client.connect();
     completeHandshake(currentMock);
@@ -554,18 +565,19 @@ describe("client.streamEvents()", () => {
     await Promise.resolve();
 
     const chatEnvelope = currentMock.lastSent();
-    expect(typeof chatEnvelope.message).toBe("string");
-    const msg = chatEnvelope.message as string;
+    const params = chatEnvelope.params as Record<string, unknown>;
+    expect(typeof params.content).toBe("string");
+    const msg = params.content as string;
     expect(msg).toContain("# File\nsome code");
     expect(msg).toContain("Question?");
     expect(msg).toContain("---");
 
-    currentMock.simulateMessage(JSON.stringify({ type: "done" }));
+    currentMock.simulateMessage(eventFrame("chat.final"));
     await nextPromise;
     await gen.return(undefined);
   });
 
-  it("forwards mode to the chat envelope", async () => {
+  it("forwards mode to the chat.send params", async () => {
     const client = makeClient();
     const connectPromise = client.connect();
     completeHandshake(currentMock);
@@ -576,14 +588,14 @@ describe("client.streamEvents()", () => {
     await Promise.resolve();
 
     const chatEnvelope = currentMock.lastSent();
-    expect(chatEnvelope.mode).toBe("code");
+    expect(chatEnvelope.params).toMatchObject({ mode: "code" });
 
-    currentMock.simulateMessage(JSON.stringify({ type: "done" }));
+    currentMock.simulateMessage(eventFrame("chat.final"));
     await nextPromise;
     await gen.return(undefined);
   });
 
-  it("forwards channelId to the chat envelope", async () => {
+  it("forwards channelId to the chat.send params", async () => {
     const client = makeClient();
     const connectPromise = client.connect();
     completeHandshake(currentMock);
@@ -594,9 +606,9 @@ describe("client.streamEvents()", () => {
     await Promise.resolve();
 
     const chatEnvelope = currentMock.lastSent();
-    expect(chatEnvelope.channel_id).toBe("jupyter");
+    expect(chatEnvelope.params).toMatchObject({ channel_id: "jupyter" });
 
-    currentMock.simulateMessage(JSON.stringify({ type: "done" }));
+    currentMock.simulateMessage(eventFrame("chat.final"));
     await nextPromise;
     await gen.return(undefined);
   });
@@ -612,10 +624,9 @@ describe("client.streamEvents()", () => {
     await Promise.resolve();
 
     const chatEnvelope = currentMock.lastSent();
-    expect(chatEnvelope.mode).toBe("team");
-    expect(chatEnvelope.channel_id).toBe("ide");
+    expect(chatEnvelope.params).toMatchObject({ mode: "team", channel_id: "ide" });
 
-    currentMock.simulateMessage(JSON.stringify({ type: "done" }));
+    currentMock.simulateMessage(eventFrame("chat.final"));
     await nextPromise;
     await gen.return(undefined);
   });
@@ -626,7 +637,7 @@ describe("client.streamEvents()", () => {
 // ---------------------------------------------------------------------------
 
 describe("client.interrupt()", () => {
-  it("sends {type:'chat.interrupt'}", async () => {
+  it("sends a chat.interrupt req", async () => {
     const client = makeClient();
     const connectPromise = client.connect();
     completeHandshake(currentMock);
@@ -634,7 +645,7 @@ describe("client.interrupt()", () => {
 
     client.interrupt();
     const envelope = currentMock.lastSent();
-    expect(envelope.type).toBe(MSG.INTERRUPT);
+    expect(envelope.method).toBe("chat.interrupt");
   });
 
   it("is fire-and-forget — does not return a promise", () => {
@@ -666,8 +677,8 @@ describe("client.streamEvents() — rich event types", () => {
 
     await Promise.resolve();
 
-    currentMock.simulateMessage(JSON.stringify({ type: "reasoning", text: "First, I consider..." }));
-    currentMock.simulateMessage(JSON.stringify({ type: "done" }));
+    currentMock.simulateMessage(eventFrame("chat.reasoning", { content: "First, I consider..." }));
+    currentMock.simulateMessage(eventFrame("chat.final"));
 
     await iterPromise;
 
@@ -693,8 +704,10 @@ describe("client.streamEvents() — rich event types", () => {
 
     await Promise.resolve();
 
-    currentMock.simulateMessage(JSON.stringify({ type: "status", status: "Searching the web..." }));
-    currentMock.simulateMessage(JSON.stringify({ type: "done" }));
+    currentMock.simulateMessage(
+      eventFrame("chat.processing_status", { is_processing: true, agent_id: "a1" }),
+    );
+    currentMock.simulateMessage(eventFrame("chat.final"));
 
     await iterPromise;
 
@@ -719,9 +732,9 @@ describe("client.streamEvents() — rich event types", () => {
     await Promise.resolve();
 
     currentMock.simulateMessage(
-      JSON.stringify({ type: "usage", input_tokens: 100, output_tokens: 200, cost_usd: 0.005 }),
+      eventFrame("chat.usage_metadata", { input_tokens: 100, output_tokens: 200, cost_usd: 0.005 }),
     );
-    currentMock.simulateMessage(JSON.stringify({ type: "done" }));
+    currentMock.simulateMessage(eventFrame("chat.final"));
 
     await iterPromise;
 

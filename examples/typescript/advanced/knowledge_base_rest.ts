@@ -25,7 +25,7 @@ async function queryKnowledgeBase(query: string): Promise<string[]> {
 }
 
 const client = new JiuwenSwarmClient({
-  url: "ws://localhost:19000/v1/ws",
+  url: "ws://localhost:19000/ws",
   authToken: process.env.JIUWENSWARM_TOKEN,
   onToken: (text) => process.stdout.write(text),
   onDone: () => console.log("\n[done]"),

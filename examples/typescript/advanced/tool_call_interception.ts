@@ -6,13 +6,13 @@
  * with `{error: "not supported"}`.  Supply `onToolCall` to handle them.
  *
  * Requires: npm install @jiuwenswarm/sdk
- * Gateway:  ws://localhost:19000/v1/ws  (start with `jiuwenswarm serve`)
+ * Gateway:  ws://localhost:19000/ws  (start with `jiuwenswarm serve`)
  */
 
 import { JiuwenSwarmClient, ToolCallEnvelope } from "@jiuwenswarm/sdk";
 
 const client = new JiuwenSwarmClient({
-  url: "ws://localhost:19000/v1/ws",
+  url: "ws://localhost:19000/ws",
 
   // Return a string result or throw to send an error back to the server.
   onToolCall: async (call: ToolCallEnvelope): Promise<string> => {

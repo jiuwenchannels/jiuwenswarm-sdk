@@ -1,9 +1,14 @@
 /**
  * JiuwenSwarmClient — WebSocket client for the JiuwenSwarm gateway.
  *
+ * The gateway speaks a JSON-RPC style protocol:
+ *   - client → server: `{type:"req", id, method, params, is_stream}`
+ *   - server → client (method response): `{type:"res", id, ok, payload, error}`
+ *   - server → client (stream/event): `{type:"event", event, payload}`
+ *
  * ```typescript
  * const client = new JiuwenSwarmClient({
- *   url: "ws://localhost:19000/v1/ws",
+ *   url: "ws://localhost:19000/ws",
  *   onToken: (text) => process.stdout.write(text),
  *   onDone:  (sessionId) => console.log("\n[done]", sessionId),
  * });
@@ -53,7 +58,7 @@ import type {
   ToolCallEnvelope,
   AgentMode,
 } from "../protocol/types";
-import { parseEnvelope, ConnectionError } from "../protocol/validate";
+import { ConnectionError } from "../protocol/validate";
 import { ReconnectScheduler } from "./reconnect";
 import { SessionManager, type SessionDelegate } from "../session/SessionManager";
 
@@ -93,6 +98,11 @@ type StreamEventsHandle = {
   finish: (err?: Error) => void;
 };
 
+/** Default timeout for a single RPC request (ms). */
+const REQUEST_TIMEOUT_MS = 20_000;
+/** Default timeout for the connection handshake (ms). */
+const CONNECT_TIMEOUT_MS = 15_000;
+
 // ---------------------------------------------------------------------------
 // WebSocket adapter
 // ---------------------------------------------------------------------------
@@ -116,6 +126,25 @@ function getWebSocket(): typeof WebSocket {
   }
 }
 
+function generateId(): string {
+  if (
+    typeof globalThis !== "undefined" &&
+    typeof (globalThis as { crypto?: { randomUUID?: () => string } }).crypto?.randomUUID === "function"
+  ) {
+    return (
+      globalThis as { crypto: { randomUUID: () => string } }
+    ).crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
+function asString(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : value == null ? fallback : String(value);
+}
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -125,47 +154,27 @@ export class JiuwenSwarmClient
   implements SessionDelegate
 {
   private readonly _config: ClientConfig;
-  private readonly _rpcMode: boolean;
-  private readonly _rpcChannelId: string;
   private _ws: WebSocket | null = null;
   private _scheduler: ReconnectScheduler | null = null;
 
   /** Pending promise for connect() */
   private _pendingConnect: Resolver<void> | null = null;
-  /** Pending promise for _listSessions() */
-  private _pendingSessions: Resolver<SessionInfo[]> | null = null;
-  /** Pending promise for _createSession() */
-  private _pendingCreate: Resolver<SessionInfo> | null = null;
+  private _connectTimer: ReturnType<typeof setTimeout> | null = null;
   /** Pending promise for send() */
   private _pendingChat: Resolver<void> | null = null;
-  /** Pending promise for listSkills() */
-  private _pendingSkills: Resolver<SkillInfo[]> | null = null;
-  /** Pending promise for toggleSkill() */
-  private _pendingSkillToggle: Resolver<{ id: string; enabled: boolean }> | null = null;
-  /** Pending promise for listModels() */
-  private _pendingModels: Resolver<ModelInfo[]> | null = null;
-  /** Pending promise for switchModel() */
-  private _pendingSwitchModel: Resolver<string> | null = null;
-  /** Pending promise for switchSession() */
-  private _pendingSwitchSession: Resolver<SessionInfo> | null = null;
-  /** Pending promise for renameSession() */
-  private _pendingRenameSession: Resolver<{ session_id: string; title: string }> | null = null;
-  /** Pending promise for getHistory() */
-  private _pendingHistory: Resolver<HistoryPage> | null = null;
-  /** Pending promise for getMemoryUsage() */
-  private _pendingMemory: Resolver<MemoryStats> | null = null;
-  /** Pending promise for sessions.delete() */
-  private _pendingDeleteSession: Resolver<string> | null = null;
-  /** Pending promise for exportSession() */
-  private _pendingExport: Resolver<SessionExport> | null = null;
+  /** Pending request map keyed by RPC request id. */
+  private _pendingRpc: Map<
+    string,
+    { resolve: (payload: Record<string, unknown>) => void; reject: (e: unknown) => void }
+  > = new Map();
   /** Active streamEvents() generator handle, if any. */
   private _pendingStreamEvents: StreamEventsHandle | null = null;
 
-  /** Set to true once the connect ack is received. */
+  /** Set to true once the connection.ack event is received. */
   private _connected = false;
   /**
    * The session ID assigned by the server in the connection ack.
-   * `null` until `connect()` resolves (and the server sends `ack`).
+   * `null` until `connect()` resolves.
    */
   private _sessionId: string | null = null;
 
@@ -174,8 +183,7 @@ export class JiuwenSwarmClient
 
   /**
    * The session ID assigned by the server in the connection acknowledgement.
-   * Available after `connect()` resolves.  Useful when the server auto-creates
-   * a default session on connect.
+   * Available after `connect()` resolves.
    */
   get sessionId(): string | null {
     return this._sessionId;
@@ -184,8 +192,6 @@ export class JiuwenSwarmClient
   constructor(config: ClientConfig) {
     super();
     this._config = config;
-    this._rpcMode = config.rpcMode === true;
-    this._rpcChannelId = config.rpcChannelId ?? "ide";
     this.sessions = new SessionManager(this);
 
     if (config.reconnect !== false) {
@@ -200,9 +206,9 @@ export class JiuwenSwarmClient
   // ---------------------------------------------------------------------------
 
   /**
-   * Open the WebSocket connection and complete the `connect` handshake.
+   * Open the WebSocket connection and wait for the gateway's `connection.ack`.
    *
-   * Resolves when the server sends an `ack` envelope.
+   * Resolves when the server sends the `connection.ack` event.
    * Rejects on connection errors or timeout.
    */
   connect(): Promise<void> {
@@ -212,6 +218,13 @@ export class JiuwenSwarmClient
         return;
       }
       this._pendingConnect = { resolve, reject };
+      this._connectTimer = setTimeout(() => {
+        if (this._pendingConnect) {
+          const pending = this._pendingConnect;
+          this._pendingConnect = null;
+          pending.reject(new ConnectionError("Connection timed out waiting for connection.ack"));
+        }
+      }, CONNECT_TIMEOUT_MS);
       this._openSocket();
     });
   }
@@ -233,7 +246,7 @@ export class JiuwenSwarmClient
   /**
    * Send a chat message and stream the response.
    *
-   * Resolves when the server sends the `done` envelope.
+   * Resolves when the server sends the `chat.final` event.
    * Individual tokens are delivered via the `onToken` callback.
    *
    * @param message  The user message to send.
@@ -250,39 +263,24 @@ export class JiuwenSwarmClient
         message,
         options?.contextPrefix,
       );
-      this._sendRaw({
-        type: MSG.CHAT,
-        message: text,
-        session_id: options?.sessionId ?? this.sessions.activeId ?? undefined,
-        mode: options?.mode ?? this._config.mode,
-        channel_id: options?.channelId ?? this._config.channelId,
-        media_items: options?.mediaItems,
-        model_name: options?.modelName,
-      });
+      this._sendRpc(
+        "chat.send",
+        {
+          session_id: options?.sessionId ?? this.sessions.activeId ?? undefined,
+          content: text,
+          query: text,
+          mode: options?.mode ?? this._config.mode ?? "agent",
+          media_items: options?.mediaItems,
+          model_name: options?.modelName,
+        },
+        { stream: true },
+      );
     });
   }
 
   /**
    * Send a chat message and iterate over typed `StreamEvent` objects as they
    * arrive from the server.
-   *
-   * This is the richer alternative to `send()`.  Instead of delivering tokens
-   * through an `onToken` callback, every protocol event — token deltas,
-   * reasoning steps, tool calls, team events, usage, and done — is exposed as
-   * a strongly-typed `StreamEvent` via an async generator.
-   *
-   * ```typescript
-   * for await (const event of client.streamEvents("Summarise this article")) {
-   *   switch (event.kind) {
-   *     case "delta":     process.stdout.write(event.text); break;
-   *     case "tool_call": console.log("[tool]", event.name); break;
-   *     case "done":      console.log("\n[done]"); break;
-   *   }
-   * }
-   * ```
-   *
-   * @param prompt   The user message to send.
-   * @param options  Optional mode, channelId, contextPrefix, sessionId.
    */
   async *streamEvents(
     prompt: string,
@@ -319,19 +317,22 @@ export class JiuwenSwarmClient
       options?.contextPrefix,
     );
 
-    this._sendRaw({
-      type: MSG.CHAT,
-      message,
-      session_id: options?.sessionId ?? this.sessions.activeId ?? undefined,
-      mode: options?.mode ?? this._config.mode,
-      channel_id: options?.channelId ?? this._config.channelId,
-      media_items: options?.mediaItems,
-      model_name: options?.modelName,
-    });
+    this._sendRpc(
+      "chat.send",
+      {
+        session_id: options?.sessionId ?? this.sessions.activeId ?? undefined,
+        content: message,
+        query: message,
+        mode: options?.mode ?? this._config.mode ?? "agent",
+        channel_id: options?.channelId ?? this._config.channelId,
+        media_items: options?.mediaItems,
+        model_name: options?.modelName,
+      },
+      { stream: true },
+    );
 
     try {
       while (true) {
-        // Drain buffered events.
         while (buffer.length > 0) {
           yield buffer.shift()!;
         }
@@ -339,17 +340,14 @@ export class JiuwenSwarmClient
           if (error) throw error;
           break;
         }
-        // Wait for the next push() or finish() call.
         await new Promise<void>((resolve) => {
           notify = resolve;
         });
       }
-      // Drain any events that arrived between the final push and the yield.
       while (buffer.length > 0) {
         yield buffer.shift()!;
       }
     } finally {
-      // Clean up only if this generator is still the active one.
       if (this._pendingStreamEvents?.finish === finish) {
         this._pendingStreamEvents = null;
       }
@@ -358,73 +356,41 @@ export class JiuwenSwarmClient
 
   /**
    * Fire-and-forget interrupt: ask the server to cancel or pause the current
-   * agent turn.  No response is expected — the next stream event will be an
-   * `ErrorEvent` or `DoneEvent` confirming the cancellation.
+   * agent turn.  No response is expected.
    */
   interrupt(): void {
-    this._sendRaw({ type: MSG.INTERRUPT });
+    this._sendRpc("chat.interrupt", {
+      session_id: this.sessions.activeId ?? this._sessionId ?? undefined,
+      intent: "cancel",
+      mode: this._config.mode ?? "agent",
+    });
   }
 
   // ---------------------------------------------------------------------------
   // Public API — rewind (IDE parity)
   // ---------------------------------------------------------------------------
 
-  /**
-   * Rewind the conversation to a previous message (undo).
-   *
-   * This is a fire-and-forget call.  The server will emit a `rewind_done`
-   * push event when the rewind completes, which the client surfaces as an
-   * `EventEmitter` event:
-   *
-   * ```typescript
-   * client.on("rewind_done", (messageId) => {
-   *   console.log("Rewound to", messageId);
-   * });
-   * client.rewind(); // rewind to last user turn
-   * // or:
-   * client.rewind("msg_abc123"); // rewind to a specific message
-   * ```
-   *
-   * The server also pushes `rewindable` events for eligible messages:
-   * ```typescript
-   * client.on("rewindable", (messageId) => { ... });
-   * ```
-   *
-   * @param messageId  Optional target message ID.  When omitted the server
-   *                   rewinds to the last user turn.
-   */
+  /** Rewind the conversation to a previous message (fire-and-forget). */
   rewind(messageId?: string): void {
-    this._sendRaw({ type: MSG.REWIND, message_id: messageId });
+    this._sendRpc("session.rewind", {
+      message_id: messageId,
+      session_id: this.sessions.activeId ?? this._sessionId ?? undefined,
+    });
   }
 
   // ---------------------------------------------------------------------------
   // Public API — session export (IDE parity)
   // ---------------------------------------------------------------------------
 
-  /**
-   * Request a full export of a session's conversation.
-   *
-   * ```typescript
-   * const result = await client.exportSession("sess_abc123", "markdown");
-   * if (result.url) {
-   *   console.log("Download:", result.url);
-   * } else if (result.data) {
-   *   fs.writeFileSync("export.md", Buffer.from(result.data, "base64"));
-   * }
-   * ```
-   *
-   * @param sessionId  Session to export.
-   * @param format     `"markdown"` (default), `"json"`, or `"html"`.
-   */
   exportSession(sessionId: string, format?: string): Promise<SessionExport> {
-    return new Promise<SessionExport>((resolve, reject) => {
-      if (!this._connected || !this._ws) {
-        reject(new ConnectionError("Not connected."));
-        return;
-      }
-      this._pendingExport = { resolve, reject };
-      this._sendRaw({ type: MSG.EXPORT_SESSION, session_id: sessionId, format });
-    });
+    return this._request("session.export", { session_id: sessionId, format }).then(
+      (payload) => ({
+        session_id: asString(payload.session_id, sessionId),
+        url: typeof payload.url === "string" ? payload.url : undefined,
+        data: typeof payload.data === "string" ? payload.data : undefined,
+        format: typeof payload.format === "string" ? payload.format : format,
+      }),
+    );
   }
 
   /**
@@ -436,210 +402,97 @@ export class JiuwenSwarmClient
   }
 
   // ---------------------------------------------------------------------------
-  // Public API — skills (Phase 12)
+  // Public API — skills
   // ---------------------------------------------------------------------------
 
-  /**
-   * Fetch the list of installed skills/plugins from the server.
-   *
-   * ```typescript
-   * const skills = await client.listSkills();
-   * skills.forEach(s => console.log(s.name, s.enabled));
-   * ```
-   */
   listSkills(): Promise<SkillInfo[]> {
-    return new Promise<SkillInfo[]>((resolve, reject) => {
-      if (!this._connected || !this._ws) {
-        reject(new ConnectionError("Not connected."));
-        return;
-      }
-      this._pendingSkills = { resolve, reject };
-      this._sendRaw({ type: MSG.SKILLS });
+    return this._request("skills.list", {}).then((payload) => {
+      const raw = Array.isArray(payload.skills) ? payload.skills : [];
+      return raw.map((s) => JiuwenSwarmClient._toSkillInfo(s as Record<string, unknown>));
     });
   }
 
-  /**
-   * Enable or disable a skill by its ID.
-   *
-   * ```typescript
-   * await client.toggleSkill("web-search", true);
-   * ```
-   *
-   * @param id       Skill identifier (from `SkillInfo.id`).
-   * @param enabled  `true` to enable, `false` to disable.
-   */
   toggleSkill(id: string, enabled: boolean): Promise<{ id: string; enabled: boolean }> {
-    return new Promise((resolve, reject) => {
-      if (!this._connected || !this._ws) {
-        reject(new ConnectionError("Not connected."));
-        return;
-      }
-      this._pendingSkillToggle = { resolve, reject };
-      this._sendRaw({ type: MSG.SKILL_TOGGLE, id, enabled });
-    });
+    return this._request("skills.toggle", { skill_id: id, enabled }).then(() => ({ id, enabled }));
   }
 
   // ---------------------------------------------------------------------------
-  // Public API — HITL (Phase 12)
+  // Public API — HITL
   // ---------------------------------------------------------------------------
 
-  /**
-   * Reply to a `confirm_interrupt` event.
-   *
-   * When a `streamEvents()` loop yields a `ConfirmInterruptEvent`, call this
-   * method with the `requestId` from that event and a map of answers.  The
-   * server resumes the agent with the provided answers as additional context.
-   *
-   * ```typescript
-   * for await (const event of client.streamEvents("Analyse this")) {
-   *   if (event.kind === "confirm_interrupt") {
-   *     await client.sendAnswer(event.requestId, { confirm: "yes" });
-   *   }
-   * }
-   * ```
-   *
-   * @param requestId  The `requestId` from the `ConfirmInterruptEvent`.
-   * @param answers    Key/value map of answers to send to the agent.
-   */
   sendAnswer(requestId: string, answers: Record<string, string>): void {
-    this._sendRaw({ type: MSG.HITL_ANSWER, request_id: requestId, answers });
+    this._sendRpc("chat.user_answer", {
+      request_id: requestId,
+      answers,
+      source: "confirm_interrupt",
+      session_id: this.sessions.activeId ?? this._sessionId ?? undefined,
+      mode: this._config.mode ?? "agent",
+    });
   }
 
   // ---------------------------------------------------------------------------
-  // Public API — models (IDE parity)
+  // Public API — models
   // ---------------------------------------------------------------------------
 
-  /**
-   * Fetch the list of available LLM models from the server.
-   *
-   * ```typescript
-   * const models = await client.listModels();
-   * models.forEach(m => console.log(m.id, m.active ? "(active)" : ""));
-   * ```
-   */
   listModels(): Promise<ModelInfo[]> {
-    return new Promise<ModelInfo[]>((resolve, reject) => {
-      if (!this._connected || !this._ws) {
-        reject(new ConnectionError("Not connected."));
-        return;
-      }
-      this._pendingModels = { resolve, reject };
-      this._sendRaw({ type: MSG.MODELS });
+    return this._request("models.list", {}).then((payload) => {
+      const raw = Array.isArray(payload.models) ? payload.models : [];
+      const active = asString(payload.active_model) || undefined;
+      return raw.map((m) => JiuwenSwarmClient._toModelInfo(m as Record<string, unknown>, active));
     });
   }
 
-  /**
-   * Switch the active LLM model for the current session.
-   *
-   * ```typescript
-   * await client.switchModel("gpt-4o");
-   * ```
-   *
-   * @param modelId  Model identifier (from `ModelInfo.id`).
-   */
   switchModel(modelId: string): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
-      if (!this._connected || !this._ws) {
-        reject(new ConnectionError("Not connected."));
-        return;
-      }
-      this._pendingSwitchModel = { resolve, reject };
-      this._sendRaw({ type: MSG.SWITCH_MODEL, model_id: modelId });
-    });
+    return this._request("models.switch", { model_id: modelId }).then(() => modelId);
   }
 
   // ---------------------------------------------------------------------------
   // Public API — session lifecycle (IDE parity)
   // ---------------------------------------------------------------------------
 
-  /**
-   * Switch the active gateway session to an existing session by ID.
-   *
-   * ```typescript
-   * const session = await client.switchSession("sess_abc123");
-   * client.sessions.setActive(session.id);
-   * ```
-   *
-   * @param sessionId  ID of the session to switch to.
-   */
   switchSession(sessionId: string): Promise<SessionInfo> {
-    return new Promise<SessionInfo>((resolve, reject) => {
-      if (!this._connected || !this._ws) {
-        reject(new ConnectionError("Not connected."));
-        return;
-      }
-      this._pendingSwitchSession = { resolve, reject };
-      this._sendRaw({ type: MSG.SWITCH_SESSION, session_id: sessionId });
+    return this._request("session.switch", { session_id: sessionId }).then((payload) => {
+      const session = JiuwenSwarmClient._toSessionInfo(payload, sessionId);
+      this.sessions._updateCache([session]);
+      this.sessions.setActive(session.id);
+      return session;
     });
   }
 
-  /**
-   * Rename the active session.
-   *
-   * ```typescript
-   * await client.renameSession("sess_abc123", "My research project");
-   * ```
-   *
-   * @param sessionId  Session to rename.
-   * @param title      New human-readable title.
-   */
   renameSession(
     sessionId: string,
     title: string,
   ): Promise<{ session_id: string; title: string }> {
-    return new Promise((resolve, reject) => {
-      if (!this._connected || !this._ws) {
-        reject(new ConnectionError("Not connected."));
-        return;
-      }
-      this._pendingRenameSession = { resolve, reject };
-      this._sendRaw({ type: MSG.RENAME_SESSION, session_id: sessionId, title });
-    });
+    return this._request("session.rename", { session_id: sessionId, title }).then(() => ({
+      session_id: sessionId,
+      title,
+    }));
   }
 
-  /**
-   * Load a page of message history for a session.
-   *
-   * ```typescript
-   * const page = await client.getHistory("sess_abc123", 1);
-   * page.messages.forEach(m => console.log(m.role, m.content));
-   * ```
-   *
-   * @param sessionId  Session whose history to load.
-   * @param page       1-based page number (default: 1).
-   */
   getHistory(sessionId: string, page = 1): Promise<HistoryPage> {
-    return new Promise<HistoryPage>((resolve, reject) => {
-      if (!this._connected || !this._ws) {
-        reject(new ConnectionError("Not connected."));
-        return;
-      }
-      this._pendingHistory = { resolve, reject };
-      this._sendRaw({ type: MSG.HISTORY_GET, session_id: sessionId, page });
-    });
+    return this._request("history.get", { session_id: sessionId, page_idx: page }).then(
+      (payload) => ({
+        session_id: asString(payload.session_id, sessionId),
+        page: typeof payload.page === "number" ? payload.page : page,
+        total_pages: typeof payload.total_pages === "number" ? payload.total_pages : 1,
+        messages: Array.isArray(payload.messages)
+          ? payload.messages.map((m) => m as never)
+          : [],
+      }),
+    );
   }
 
   // ---------------------------------------------------------------------------
-  // Public API — memory (IDE parity)
+  // Public API — memory
   // ---------------------------------------------------------------------------
 
-  /**
-   * Fetch process and system memory statistics from the gateway.
-   *
-   * ```typescript
-   * const stats = await client.getMemoryUsage();
-   * console.log(`RSS: ${stats.process_rss_mb} MB`);
-   * ```
-   */
   getMemoryUsage(): Promise<MemoryStats> {
-    return new Promise<MemoryStats>((resolve, reject) => {
-      if (!this._connected || !this._ws) {
-        reject(new ConnectionError("Not connected."));
-        return;
-      }
-      this._pendingMemory = { resolve, reject };
-      this._sendRaw({ type: MSG.MEMORY_COMPUTE });
-    });
+    return this._request("memory.compute", {}).then((payload) => ({
+      process_rss_mb: typeof payload.rss_mb === "number" ? payload.rss_mb : 0,
+      system_total_mb: typeof payload.total_mb === "number" ? payload.total_mb : 0,
+      system_free_mb: typeof payload.available_mb === "number" ? payload.available_mb : 0,
+      context_tokens: typeof payload.context_tokens === "number" ? payload.context_tokens : undefined,
+    }));
   }
 
   // ---------------------------------------------------------------------------
@@ -647,13 +500,9 @@ export class JiuwenSwarmClient
   // ---------------------------------------------------------------------------
 
   _listSessions(): Promise<SessionInfo[]> {
-    return new Promise<SessionInfo[]>((resolve, reject) => {
-      if (!this._connected || !this._ws) {
-        reject(new ConnectionError("Not connected."));
-        return;
-      }
-      this._pendingSessions = { resolve, reject };
-      this._sendRaw({ type: MSG.SESSIONS });
+    return this._request("session.list", { limit: 50 }).then((payload) => {
+      const raw = Array.isArray(payload.sessions) ? payload.sessions : [];
+      return raw.map((s) => JiuwenSwarmClient._toSessionInfo(s as Record<string, unknown>, undefined));
     });
   }
 
@@ -662,42 +511,27 @@ export class JiuwenSwarmClient
     agent_id?: string;
     mode?: AgentMode;
   }): Promise<SessionInfo> {
-    return new Promise<SessionInfo>((resolve, reject) => {
-      if (!this._connected || !this._ws) {
-        reject(new ConnectionError("Not connected."));
-        return;
-      }
-      this._pendingCreate = { resolve, reject };
-      this._sendRaw({
-        type: MSG.CREATE_SESSION,
-        title: params.title,
-        agent_id: params.agent_id,
-        mode: params.mode,
-      });
+    return this._request("session.create", {
+      title: params.title,
+      mode: params.mode ?? this._config.mode ?? "agent",
+      create_token: generateId(),
+    }).then((payload) => {
+      const id = asString(payload.session_id) || asString(payload.sessionId) || "";
+      const session = JiuwenSwarmClient._toSessionInfo(payload, id || undefined);
+      if (!session.id) session.id = id;
+      if (params.title && !session.title) session.title = params.title;
+      return session;
     });
   }
 
   _deleteSession(sessionId: string): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
-      if (!this._connected || !this._ws) {
-        reject(new ConnectionError("Not connected."));
-        return;
-      }
-      this._pendingDeleteSession = { resolve, reject };
-      this._sendRaw({ type: MSG.DELETE_SESSION, session_id: sessionId });
-    });
+    return this._request("session.delete", { session_id: sessionId }).then(() => sessionId);
   }
 
   // ---------------------------------------------------------------------------
-  // Static helpers
+  // Static helpers — mapping
   // ---------------------------------------------------------------------------
 
-  /**
-   * Prepend `contextPrefix` to `prompt` with a `\n\n---\n\n` separator.
-   * Returns `prompt` unchanged when `contextPrefix` is absent or empty.
-   *
-   * Mirrors Python SDK's `Agent._apply_context()`.
-   */
   static _applyContextPrefix(prompt: string, contextPrefix?: string): string {
     if (!contextPrefix || contextPrefix.trim() === "") {
       return prompt;
@@ -705,90 +539,44 @@ export class JiuwenSwarmClient
     return `${contextPrefix.trimEnd()}\n\n---\n\n${prompt}`;
   }
 
-  // ---------------------------------------------------------------------------
-  // Static helpers — RPC mode
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Maps flat envelope `type` strings to the RPC method names used by the
-   * jiuwenswarm-ide correlated-RPC protocol.  Types that already match their
-   * RPC method name (dotted names like `"session.delete"`) are passed through.
-   */
-  private static readonly _RPC_METHOD: Record<string, string> = {
-    connect: "connect",
-    sessions: "session.list",
-    create_session: "session.create",
-    chat: "chat.send",
-    tool_result: "tool.result",
-    skills: "skills.list",
-    skill_toggle: "skills.toggle",
-    hitl_answer: "hitl.answer",
-    "chat.interrupt": "chat.interrupt",
-    "models.list": "models.list",
-    "models.switch": "models.switch",
-    "session.switch": "session.switch",
-    "session.rename": "session.rename",
-    "session.delete": "session.delete",
-    "history.get": "history.get",
-    "memory.compute": "memory.compute",
-    rewind: "session.rewind",
-    "session.export": "session.export",
-  };
-
-  /**
-   * Strips the `type` field from an envelope and renames fields whose names
-   * differ between the flat protocol and the IDE RPC `params` object.
-   *
-   * Known renames:
-   * - `chat` → `message` becomes `content`
-   * - `skill_toggle` → `id` becomes `skill_id`
-   * - `history.get` → `page` becomes `page_idx`
-   */
-  private static _flatToRpcParams(
-    type: string,
-    envelope: object,
-  ): Record<string, unknown> {
-    const { type: _t, ...rest } = envelope as Record<string, unknown>;
-    void _t; // intentionally dropped
-
-    if (type === "chat" && "message" in rest) {
-      const { message, ...remaining } = rest;
-      return { content: message, ...remaining };
-    }
-    if (type === "skill_toggle" && "id" in rest) {
-      const { id, ...remaining } = rest;
-      return { skill_id: id, ...remaining };
-    }
-    if (type === "history.get" && "page" in rest) {
-      const { page, ...remaining } = rest;
-      return { page_idx: page, ...remaining };
-    }
-    return rest;
+  private static _toSessionInfo(
+    raw: Record<string, unknown>,
+    fallbackId?: string,
+  ): SessionInfo {
+    const id = asString(raw.session_id) || asString(raw.id) || fallbackId || "";
+    const mode = asString(raw.mode, "agent") as AgentMode;
+    return {
+      id,
+      title: asString(raw.title),
+      agent_id: asString(raw.agent_id, ""),
+      mode,
+      created_at: asString(raw.created_at),
+    };
   }
 
-  /**
-   * Generate a random correlation ID for RPC envelopes.
-   * Uses `crypto.randomUUID()` when available, otherwise falls back to a
-   * `Math.random()`-based UUID v4.
-   */
-  private static _generateId(): string {
-    if (
-      typeof globalThis !== "undefined" &&
-      typeof (globalThis as { crypto?: { randomUUID?: () => string } }).crypto
-        ?.randomUUID === "function"
-    ) {
-      return (
-        globalThis as { crypto: { randomUUID: () => string } }
-      ).crypto.randomUUID();
-    }
-    // Fallback: RFC-4122 UUID v4 via Math.random()
-    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(
-      /[xy]/g,
-      (c) => {
-        const r = (Math.random() * 16) | 0;
-        return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
-      },
-    );
+  private static _toModelInfo(
+    raw: Record<string, unknown>,
+    active?: string,
+  ): ModelInfo {
+    const id = asString(raw.model_name) || asString(raw.id) || asString(raw.alias);
+    return {
+      id,
+      name: asString(raw.alias, id),
+      provider: asString(raw.model_provider),
+      context_length:
+        typeof raw.context_length === "number" ? raw.context_length : undefined,
+      active: active !== undefined ? id === active : undefined,
+    };
+  }
+
+  private static _toSkillInfo(raw: Record<string, unknown>): SkillInfo {
+    const id = asString(raw.skill_id) || asString(raw.id);
+    return {
+      id,
+      name: asString(raw.name, id),
+      description: asString(raw.description),
+      enabled: raw.enabled === true || raw.enabled === "true",
+    };
   }
 
   // ---------------------------------------------------------------------------
@@ -801,12 +589,8 @@ export class JiuwenSwarmClient
     this._ws = ws;
 
     ws.onopen = () => {
-      // Send the connect envelope immediately on open.
-      this._sendRaw({
-        type: MSG.CONNECT,
-        client_type: "typescript-sdk",
-        token: this._config.authToken,
-      });
+      // The gateway sends `connection.ack` automatically on connect; there is
+      // no client-side `connect` request to send.
     };
 
     ws.onmessage = (event: MessageEvent) => {
@@ -833,7 +617,6 @@ export class JiuwenSwarmClient
   private _closeSocket(reason: string, shouldReconnect: boolean): void {
     this._connected = false;
     if (this._ws) {
-      // Remove handlers before closing to avoid triggering reconnect.
       this._ws.onclose = null as unknown as typeof this._ws.onclose;
       this._ws.onerror = null as unknown as typeof this._ws.onerror;
       this._ws.onmessage = null as unknown as typeof this._ws.onmessage;
@@ -863,43 +646,143 @@ export class JiuwenSwarmClient
   }
 
   // ---------------------------------------------------------------------------
-  // Internal — message dispatch
+  // Internal — outbound
+  // ---------------------------------------------------------------------------
+
+  private _sendRpc(
+    method: string,
+    params: Record<string, unknown>,
+    opts?: { stream?: boolean },
+  ): string {
+    const id = generateId();
+    if (!this._ws || this._ws.readyState !== 1 /* OPEN */) return id;
+    const frame: Record<string, unknown> = {
+      type: "req",
+      id,
+      method,
+      params,
+      timestamp: Date.now() / 1000,
+    };
+    if (opts?.stream) frame["is_stream"] = true;
+    this._ws.send(JSON.stringify(frame));
+    return id;
+  }
+
+  /** Send a method request and resolve with the gateway `res.payload`. */
+  private _request(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return new Promise<Record<string, unknown>>((resolve, reject) => {
+      if (!this._connected || !this._ws) {
+        reject(new ConnectionError("Not connected. Call connect() first."));
+        return;
+      }
+      const id = this._sendRpc(method, params);
+      const timer = setTimeout(() => {
+        this._pendingRpc.delete(id);
+        reject(new Error(`Request '${method}' timed out`));
+      }, REQUEST_TIMEOUT_MS);
+      this._pendingRpc.set(id, {
+        resolve: (payload) => {
+          clearTimeout(timer);
+          resolve(payload);
+        },
+        reject: (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      });
+    });
+  }
+
+  /**
+   * Legacy flat-envelope send. Translates the flat envelope into a gateway
+   * RPC request on a best-effort basis.
+   */
+  private _sendRaw(envelope: object): void {
+    const env = envelope as Record<string, unknown>;
+    const type = asString(env.type);
+    const method = JiuwenSwarmClient._RPC_METHOD[type] ?? type;
+    const params = JiuwenSwarmClient._flatToRpcParams(type, envelope);
+    this._sendRpc(method, params, { stream: type === "chat" });
+  }
+
+  private static readonly _RPC_METHOD: Record<string, string> = {
+    connect: "initialize",
+    sessions: "session.list",
+    create_session: "session.create",
+    chat: "chat.send",
+    tool_result: "tool.result",
+    skills: "skills.list",
+    skill_toggle: "skills.toggle",
+    hitl_answer: "chat.user_answer",
+    "chat.interrupt": "chat.interrupt",
+    "models.list": "models.list",
+    "models.switch": "models.switch",
+    "session.switch": "session.switch",
+    "session.rename": "session.rename",
+    "session.delete": "session.delete",
+    "history.get": "history.get",
+    "memory.compute": "memory.compute",
+    rewind: "session.rewind",
+    "session.export": "session.export",
+  };
+
+  private static _flatToRpcParams(
+    type: string,
+    envelope: object,
+  ): Record<string, unknown> {
+    const { type: _t, ...rest } = envelope as Record<string, unknown>;
+    void _t;
+
+    if (type === "chat" && "message" in rest) {
+      const { message, ...remaining } = rest;
+      return { content: message, query: message, ...remaining };
+    }
+    if (type === "skill_toggle" && "id" in rest) {
+      const { id, ...remaining } = rest;
+      return { skill_id: id, ...remaining };
+    }
+    if (type === "history.get" && "page" in rest) {
+      const { page, ...remaining } = rest;
+      return { page_idx: page, ...remaining };
+    }
+    return rest;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Internal — inbound dispatch
   // ---------------------------------------------------------------------------
 
   private _handleMessage(raw: string): void {
-    // RPC mode: unwrap {type:"res", id, data} or {type:"res", id, error} before dispatch.
-    if (this._rpcMode) {
-      let parsed: Record<string, unknown>;
-      try {
-        parsed = JSON.parse(raw) as Record<string, unknown>;
-      } catch {
-        return;
-      }
-      if (parsed["type"] === "res") {
-        const data = parsed["data"];
-        if (data && typeof data === "object") {
-          // Recurse with the inner data object as if it were a flat envelope.
-          this._handleMessage(JSON.stringify(data));
-        } else if (parsed["error"]) {
-          // Map RPC-level error to a flat error envelope.
-          this._handleMessage(
-            JSON.stringify({ type: "error", message: String(parsed["error"]) }),
-          );
-        }
-        return;
-      }
-    }
-
-    let envelope: InboundEnvelope;
+    let data: Record<string, unknown>;
     try {
-      envelope = parseEnvelope(raw);
+      const parsed = JSON.parse(raw);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return;
+      data = parsed as Record<string, unknown>;
     } catch {
-      // Malformed message — ignore silently in production.
       return;
     }
 
-    // Raw envelope view (untyped) used for parseStreamEvent and E2A handling.
-    const rawEnv = envelope as unknown as Record<string, unknown>;
+    const frameType = asString(data.type);
+
+    // Gateway RPC response frame.
+    if (frameType === "res") {
+      this._handleResFrame(data);
+      return;
+    }
+
+    // Gateway event frame → normalize to the SDK's flat envelope vocabulary.
+    if (frameType === "event") {
+      const flat = this._normalizeEventFrame(data);
+      if (flat === null) return;
+      data = flat;
+    }
+
+    // From here, `data` is a flat envelope (either already-flat or normalized).
+    const envelope = data as unknown as InboundEnvelope;
+    const rawEnv = data;
 
     // Push to the active streamEvents() generator before lifecycle side-effects.
     if (this._pendingStreamEvents) {
@@ -909,7 +792,6 @@ export class JiuwenSwarmClient
       }
     }
 
-    // Typed dispatch for known inbound envelope types.
     switch (envelope.type) {
       case MSG.ACK:
         this._onAck(envelope as AckEnvelope);
@@ -972,58 +854,206 @@ export class JiuwenSwarmClient
         this._onMetrics(envelope as MetricsEnvelope);
         break;
     }
+  }
 
-    // E2A lifecycle: "e2a.complete" / "e2a.error" are not part of InboundEnvelope
-    // but must trigger the same done/error lifecycle as their typed equivalents.
-    const rawType = rawEnv["type"] as string;
-    if (rawType === MSG.E2A_COMPLETE) {
-      this._onDone({ type: "done", session_id: rawEnv["session_id"] as string | undefined });
-    } else if (rawType === MSG.E2A_ERROR) {
-      this._onError({ type: "error", message: (rawEnv["message"] as string) ?? "Unknown error" });
+  /** Handle a gateway `res` frame, correlating by request id. */
+  private _handleResFrame(data: Record<string, unknown>): void {
+    const id = asString(data.id);
+    if (!id) return;
+    const pending = this._pendingRpc.get(id);
+    if (!pending) return;
+    this._pendingRpc.delete(id);
+
+    if (data.ok === true) {
+      const payload =
+        typeof data.payload === "object" && data.payload !== null
+          ? (data.payload as Record<string, unknown>)
+          : {};
+      pending.resolve(payload);
+    } else {
+      const payload =
+        typeof data.payload === "object" && data.payload !== null
+          ? (data.payload as Record<string, unknown>)
+          : {};
+      const error =
+        asString(data.error) || asString(payload.error) || "request failed";
+      pending.reject(new Error(error));
     }
   }
 
-  private _onAck(env: AckEnvelope): void {
-    if (env.protocol_version !== undefined) {
-      // This is the connection handshake ack.
-      this._connected = true;
-      // Persist the server-assigned session ID if present.
-      if (env.session_id) this._sessionId = env.session_id;
-      this._scheduler?.reset();
-      const pending = this._pendingConnect;
-      this._pendingConnect = null;
-      pending?.resolve();
-      this.emit("connected");
+  /**
+   * Normalize a gateway `event` frame into the SDK's flat envelope vocabulary.
+   * Returns `null` when the event carries no SDK-relevant meaning.
+   */
+  private _normalizeEventFrame(data: Record<string, unknown>): Record<string, unknown> | null {
+    const event = asString(data.event);
+    const payload =
+      typeof data.payload === "object" && data.payload !== null
+        ? (data.payload as Record<string, unknown>)
+        : {};
+
+    switch (event) {
+      case "connection.ack":
+        return {
+          type: "ack",
+          protocol_version: asString(payload.protocol_version, "1.0"),
+          session_id:
+            typeof payload.session_id === "string" ? payload.session_id : undefined,
+        };
+
+      case "chat.delta":
+        return { type: "token", text: asString(payload.content) };
+
+      case "chat.reasoning":
+        return { type: "reasoning", text: asString(payload.content) };
+
+      case "chat.tool_call":
+        return {
+          type: "tool_call",
+          name: asString(payload.tool_name) || asString(payload.name, "?"),
+          arguments:
+            typeof payload.arguments === "object" && payload.arguments !== null
+              ? payload.arguments
+              : typeof payload.input === "object" && payload.input !== null
+                ? payload.input
+                : {},
+          callId: asString(payload.call_id) || asString(payload.id),
+        };
+
+      case "chat.tool_result":
+        return {
+          type: "tool_result_server",
+          callId: asString(payload.call_id) || asString(payload.id),
+          result:
+            typeof payload.content === "string" ? payload.content : undefined,
+          error:
+            typeof payload.error === "string" ? payload.error : undefined,
+        };
+
+      case "chat.final": {
+        const inner = asString(payload.event_type);
+        // team.error is broadcast through the chat.final envelope.
+        if (inner === "team.error") {
+          return {
+            type: "error",
+            message: asString(payload.error) || asString(payload.message, "team error"),
+          };
+        }
+        return {
+          type: "done",
+          session_id:
+            typeof payload.session_id === "string" ? payload.session_id : undefined,
+        };
+      }
+
+      case "chat.error":
+        return {
+          type: "error",
+          message: asString(payload.error) || asString(payload.message, "unknown error"),
+        };
+
+      case "chat.processing_status":
+        return {
+          type: "status",
+          status: payload.is_processing === true ? "processing" : "idle",
+          agent_id:
+            typeof payload.agent_id === "string" ? payload.agent_id : undefined,
+        };
+
+      case "chat.ask_user_question":
+      case "plan.approval_required":
+        return {
+          type: "confirm_interrupt",
+          request_id: asString(payload.request_id),
+          question: asString(payload.question) || asString(payload.message),
+        };
+
+      case "chat.usage_metadata":
+      case "usage":
+        return {
+          type: "usage",
+          input_tokens: typeof payload.input_tokens === "number" ? payload.input_tokens : 0,
+          output_tokens: typeof payload.output_tokens === "number" ? payload.output_tokens : 0,
+          cost_usd: typeof payload.cost_usd === "number" ? payload.cost_usd : undefined,
+        };
+
+      case "team.member.spawned":
+        return {
+          type: "team.member.spawned",
+          agent_id: asString(payload.agent_id),
+          role: typeof payload.role === "string" ? payload.role : undefined,
+        };
+
+      case "team.member.status_changed":
+        return {
+          type: "team.member.status_changed",
+          agent_id: asString(payload.agent_id),
+          status: asString(payload.status),
+        };
+
+      case "team.task.created":
+        return {
+          type: "team.task.created",
+          task_id: asString(payload.task_id),
+          assigned_to: asString(payload.assigned_to),
+          description: asString(payload.description),
+        };
+
+      case "team.task.completed":
+        return {
+          type: "team.task.completed",
+          task_id: asString(payload.task_id),
+          agent_id: asString(payload.agent_id),
+        };
+
+      case "team.handoff":
+        return {
+          type: "team.handoff",
+          from_agent_id: asString(payload.from_agent_id),
+          to_agent_id: asString(payload.to_agent_id),
+          summary: typeof payload.summary === "string" ? payload.summary : undefined,
+        };
+
+      default:
+        return null;
     }
-    // Acks sent in response to chat (containing session_id) are intentionally
-    // ignored; the chat operation resolves on "done".
+  }
+
+  // ---------------------------------------------------------------------------
+  // Internal — flat envelope handlers
+  // ---------------------------------------------------------------------------
+
+  private _onAck(env: AckEnvelope): void {
+    this._connected = true;
+    if (env.session_id) this._sessionId = env.session_id;
+    this._scheduler?.reset();
+    if (this._connectTimer) {
+      clearTimeout(this._connectTimer);
+      this._connectTimer = null;
+    }
+    const pending = this._pendingConnect;
+    this._pendingConnect = null;
+    pending?.resolve();
+    this.emit("connected");
   }
 
   private _onSessions(env: SessionsEnvelope): void {
     this.sessions._updateCache(env.sessions);
-    const pending = this._pendingSessions;
-    this._pendingSessions = null;
-    pending?.resolve(env.sessions);
   }
 
   private _onSessionCreated(env: SessionCreatedEnvelope): void {
-    const pending = this._pendingCreate;
-    this._pendingCreate = null;
-    pending?.resolve(env.session);
+    this.sessions._updateCache([env.session]);
   }
 
   private _onToken(env: TokenEnvelope): void {
     this._config.onToken?.(env.text);
-    // Token is already forwarded to _pendingStreamEvents via _handleMessage.
   }
 
   private _onDone(env: DoneEnvelope): void {
     this._config.onDone?.(env.session_id);
-    // Resolve the send() promise (if active).
     const pending = this._pendingChat;
     this._pendingChat = null;
     pending?.resolve();
-    // Signal the streamEvents() generator (if active).
     const se = this._pendingStreamEvents;
     if (se) {
       this._pendingStreamEvents = null;
@@ -1034,105 +1064,70 @@ export class JiuwenSwarmClient
   private _onError(env: ErrorEnvelope): void {
     this._config.onError?.(env.message);
     const err = new Error(env.message);
-    // Finish the streamEvents() generator with an error.
     const se = this._pendingStreamEvents;
     if (se) {
       this._pendingStreamEvents = null;
       se.finish(err);
     }
-    // Reject whichever operation is currently pending.
-    this._rejectAllPending(err);
+    const pending = this._pendingChat;
+    this._pendingChat = null;
+    pending?.reject(err);
   }
 
   private async _onToolCall(env: ToolCallEnvelope): Promise<void> {
     if (this._config.onToolCall) {
       try {
         const result = await this._config.onToolCall(env);
-        this._sendRaw({ type: "tool_result", callId: env.callId, result });
+        this._sendRpc("tool.result", { call_id: env.callId, result });
       } catch (e) {
-        this._sendRaw({
-          type: "tool_result",
-          callId: env.callId,
+        this._sendRpc("tool.result", {
+          call_id: env.callId,
           error: e instanceof Error ? e.message : String(e),
         });
       }
     } else {
-      // Auto-reject: no handler registered.
-      this._sendRaw({
-        type: "tool_result",
-        callId: env.callId,
+      this._sendRpc("tool.result", {
+        call_id: env.callId,
         error: "Tool calls are not supported by this client",
       });
     }
   }
 
   private _onSkillsList(env: SkillsListEnvelope): void {
-    const pending = this._pendingSkills;
-    this._pendingSkills = null;
-    pending?.resolve(env.skills);
+    void env;
   }
 
   private _onSkillToggled(env: SkillToggledEnvelope): void {
-    const pending = this._pendingSkillToggle;
-    this._pendingSkillToggle = null;
-    pending?.resolve({ id: env.id, enabled: env.enabled });
+    void env;
   }
 
   private _onModelsList(env: ModelsListEnvelope): void {
-    const pending = this._pendingModels;
-    this._pendingModels = null;
-    pending?.resolve(env.models);
+    void env;
   }
 
   private _onModelSwitched(env: ModelSwitchedEnvelope): void {
-    const pending = this._pendingSwitchModel;
-    this._pendingSwitchModel = null;
-    pending?.resolve(env.model_id);
+    void env;
   }
 
   private _onSessionSwitched(env: SessionSwitchedEnvelope): void {
-    // Update the session cache and active pointer.
     this.sessions._updateCache([env.session]);
     this.sessions.setActive(env.session.id);
-    const pending = this._pendingSwitchSession;
-    this._pendingSwitchSession = null;
-    pending?.resolve(env.session);
   }
 
   private _onSessionRenamed(env: SessionRenamedEnvelope): void {
-    const pending = this._pendingRenameSession;
-    this._pendingRenameSession = null;
-    pending?.resolve({ session_id: env.session_id, title: env.title });
+    void env;
   }
 
   private _onHistoryLoaded(env: HistoryLoadedEnvelope): void {
-    const page: HistoryPage = {
-      session_id: env.session_id,
-      page: env.page,
-      total_pages: env.total_pages,
-      messages: env.messages,
-    };
-    const pending = this._pendingHistory;
-    this._pendingHistory = null;
-    pending?.resolve(page);
+    void env;
   }
 
   private _onMemoryUsage(env: MemoryUsageEnvelope): void {
-    const stats: MemoryStats = {
-      process_rss_mb: env.process_rss_mb,
-      system_total_mb: env.system_total_mb,
-      system_free_mb: env.system_free_mb,
-      context_tokens: env.context_tokens,
-    };
-    const pending = this._pendingMemory;
-    this._pendingMemory = null;
-    pending?.resolve(stats);
+    void env;
   }
 
   private _onSessionDeleted(env: SessionDeletedEnvelope): void {
-    const pending = this._pendingDeleteSession;
-    this._pendingDeleteSession = null;
-    pending?.resolve(env.session_id);
+    void env;
   }
 
   private _onRewindable(env: RewindableEnvelope): void {
@@ -1144,15 +1139,7 @@ export class JiuwenSwarmClient
   }
 
   private _onSessionExported(env: SessionExportedEnvelope): void {
-    const exported: SessionExport = {
-      session_id: env.session_id,
-      url: env.url,
-      data: env.data,
-      format: env.format,
-    };
-    const pending = this._pendingExport;
-    this._pendingExport = null;
-    pending?.resolve(exported);
+    void env;
   }
 
   private _onMetrics(env: MetricsEnvelope): void {
@@ -1168,60 +1155,28 @@ export class JiuwenSwarmClient
   // Helpers
   // ---------------------------------------------------------------------------
 
-  private _sendRaw(envelope: object): void {
-    if (!this._ws || this._ws.readyState !== 1 /* OPEN */) return;
+  private _rejectAllPending(err: unknown): void {
+    if (this._connectTimer) {
+      clearTimeout(this._connectTimer);
+      this._connectTimer = null;
+    }
+    const pendingConnect = this._pendingConnect;
+    this._pendingConnect = null;
+    pendingConnect?.reject(err);
 
-    if (this._rpcMode) {
-      const type = (envelope as Record<string, unknown>)["type"] as string;
-      const method =
-        JiuwenSwarmClient._RPC_METHOD[type] ?? type;
-      const params = JiuwenSwarmClient._flatToRpcParams(type, envelope);
-      const rpc = {
-        id: JiuwenSwarmClient._generateId(),
-        type: "req",
-        method,
-        params,
-        channel_id: this._rpcChannelId,
-        timestamp: Date.now() / 1000,
-      };
-      this._ws.send(JSON.stringify(rpc));
-      return;
+    const pendingChat = this._pendingChat;
+    this._pendingChat = null;
+    pendingChat?.reject(err);
+
+    const se = this._pendingStreamEvents;
+    if (se) {
+      this._pendingStreamEvents = null;
+      se.finish(err instanceof Error ? err : new Error(String(err)));
     }
 
-    this._ws.send(JSON.stringify(envelope));
-  }
-
-  private _rejectAllPending(err: unknown): void {
-    const ops = [
-      this._pendingConnect,
-      this._pendingSessions,
-      this._pendingCreate,
-      this._pendingChat,
-      this._pendingSkills,
-      this._pendingSkillToggle,
-      this._pendingModels,
-      this._pendingSwitchModel,
-      this._pendingSwitchSession,
-      this._pendingRenameSession,
-      this._pendingHistory,
-      this._pendingMemory,
-      this._pendingDeleteSession,
-      this._pendingExport,
-    ];
-    this._pendingConnect = null;
-    this._pendingSessions = null;
-    this._pendingCreate = null;
-    this._pendingChat = null;
-    this._pendingSkills = null;
-    this._pendingSkillToggle = null;
-    this._pendingModels = null;
-    this._pendingSwitchModel = null;
-    this._pendingSwitchSession = null;
-    this._pendingRenameSession = null;
-    this._pendingDeleteSession = null;
-    this._pendingHistory = null;
-    this._pendingMemory = null;
-    this._pendingExport = null;
-    for (const op of ops) op?.reject(err);
+    for (const [, pending] of this._pendingRpc) {
+      pending.reject(err);
+    }
+    this._pendingRpc.clear();
   }
 }
