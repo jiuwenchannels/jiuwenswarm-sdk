@@ -1,8 +1,32 @@
-# Framework Comparison: JiuwenSwarm vs LangChain vs AutoGen vs CrewAI
+# Framework Comparison: openjiuwen SDK vs LangChain vs AutoGen vs CrewAI
 
-12 real-world examples, from trivial to genuinely complex.
-Every example solves the same task across all four frameworks.
-JiuwenSwarm code is shown first since this is its documentation.
+## What you're looking at
+
+This document answers a question every engineer asks before adopting an agent
+framework: **why the openjiuwen SDK instead of LangChain, AutoGen, or CrewAI?**
+
+It does so not with prose claims, but by showing the code. Twelve real-world
+tasks — from a one-shot Q&A to a multi-agent recruitment pipeline — each solved
+identically across all four frameworks. For every task you see, side by side,
+what the solution actually costs in each framework: how many concepts you must
+import, how many objects you must wire together, and how much ceremony stands
+between you and the task itself.
+
+## How to read this
+
+- **Same task, four implementations.** Each example is one task solved in the
+  openjiuwen SDK, LangChain, AutoGen, and CrewAI. Nothing is stacked in anyone's
+  favour; each framework is shown doing the task in its own idiomatic way.
+- **openjiuwen SDK first.** Since this is the openjiuwen SDK's documentation,
+  its code is shown first — read the comparison, not the ordering.
+- **Escalating complexity.** The examples progress from trivial (single agent)
+  to genuinely hard (parallel screening, ranking, and outreach). The more moving
+  parts a task has, the more the frameworks diverge — that divergence is the
+  real comparison.
+
+The takeaway you should be able to reach on your own by the end: a framework's
+value is measured in how much *of the task* you spend your code on, versus how
+much you spend satisfying the framework.
 
 **Models used throughout:** `gpt-4o` (OpenAI) unless the example is provider-agnostic.
 
@@ -14,7 +38,7 @@ The simplest possible case: ask one question, get one structured answer.
 Use case: internal FAQ bot that answers questions about company policy.
 
 ```python
-# ── JiuwenSwarm ──────────────────────────────────────────────────────────────
+# ── openjiuwen SDK ──────────────────────────────────────────────────────────
 import asyncio
 from openjiuwen.sdk import Agent
 
@@ -85,7 +109,7 @@ Task: given a topic, search the web and produce a 3-bullet executive summary.
 Use case: morning briefing bot for a sales team.
 
 ```python
-# ── JiuwenSwarm ──────────────────────────────────────────────────────────────
+# ── openjiuwen SDK ──────────────────────────────────────────────────────────
 import asyncio
 from openjiuwen.sdk import Agent
 from openjiuwen.sdk.tools import web_search
@@ -176,7 +200,7 @@ Task: accept a Python function, return a review with severity-tagged issues.
 Use case: CI pipeline hook that comments on pull requests.
 
 ```python
-# ── JiuwenSwarm ──────────────────────────────────────────────────────────────
+# ── openjiuwen SDK ──────────────────────────────────────────────────────────
 import asyncio
 from openjiuwen.sdk import Agent
 
@@ -284,7 +308,7 @@ Task: one agent researches a topic, a second agent writes a 500-word article fro
 Use case: content marketing automation.
 
 ```python
-# ── JiuwenSwarm ──────────────────────────────────────────────────────────────
+# ── openjiuwen SDK ──────────────────────────────────────────────────────────
 import asyncio
 from openjiuwen.sdk import Agent, Team
 
@@ -404,7 +428,7 @@ Task: simultaneously research three competitors, then produce a comparison table
 Use case: product team preparing a competitive positioning deck.
 
 ```python
-# ── JiuwenSwarm ──────────────────────────────────────────────────────────────
+# ── openjiuwen SDK ──────────────────────────────────────────────────────────
 import asyncio
 from openjiuwen.sdk import Agent
 from openjiuwen.sdk.tools import web_search
@@ -559,7 +583,7 @@ Task: a support bot that remembers previous interactions with the same user acro
 Use case: e-commerce helpdesk where customers often have recurring issues.
 
 ```python
-# ── JiuwenSwarm ──────────────────────────────────────────────────────────────
+# ── openjiuwen SDK ──────────────────────────────────────────────────────────
 import asyncio
 from openjiuwen.sdk import Agent
 from openjiuwen.sdk.memory import Memory, MemoryScope
@@ -702,7 +726,7 @@ then explain the result in plain English.
 Use case: business intelligence tool for non-technical stakeholders.
 
 ```python
-# ── JiuwenSwarm ──────────────────────────────────────────────────────────────
+# ── openjiuwen SDK ──────────────────────────────────────────────────────────
 import asyncio, sqlite3
 from openjiuwen.sdk import Agent
 from openjiuwen.sdk.tools import Tool
@@ -837,7 +861,7 @@ Task: receive buggy Python code, identify all bugs, produce a corrected version 
 Use case: automated code repair step in a developer workflow.
 
 ```python
-# ── JiuwenSwarm ──────────────────────────────────────────────────────────────
+# ── openjiuwen SDK ──────────────────────────────────────────────────────────
 import asyncio
 from openjiuwen.sdk import Agent
 from openjiuwen.sdk.tools import code_interpreter
@@ -983,7 +1007,7 @@ Task: turn a raw topic into (1) a blog post, (2) SEO meta tags, (3) five social 
 Each step feeds the next. Use case: fully automated content marketing pipeline.
 
 ```python
-# ── JiuwenSwarm ──────────────────────────────────────────────────────────────
+# ── openjiuwen SDK ──────────────────────────────────────────────────────────
 import asyncio
 from openjiuwen.sdk import Agent
 from openjiuwen.sdk.flows import pipeline, agent as flow_agent
@@ -1109,7 +1133,7 @@ Task: index a folder of PDFs, then answer questions from their content.
 Use case: internal knowledge base for a legal or compliance team.
 
 ```python
-# ── JiuwenSwarm ──────────────────────────────────────────────────────────────
+# ── openjiuwen SDK ──────────────────────────────────────────────────────────
 import asyncio
 from openjiuwen.sdk import Agent
 from openjiuwen.sdk.knowledge import KnowledgeBase
@@ -1235,7 +1259,7 @@ then produce an executive summary with concrete recommendations.
 Use case: weekly automated business review sent to leadership.
 
 ```python
-# ── JiuwenSwarm ──────────────────────────────────────────────────────────────
+# ── openjiuwen SDK ──────────────────────────────────────────────────────────
 import asyncio
 from openjiuwen.sdk import Agent, Team
 from openjiuwen.sdk.tools import code_interpreter, Tool
@@ -1349,7 +1373,7 @@ and write personalised outreach emails for each.
 Use case: HR automation for high-volume hiring.
 
 ```python
-# ── JiuwenSwarm ──────────────────────────────────────────────────────────────
+# ── openjiuwen SDK ──────────────────────────────────────────────────────────
 import asyncio
 from openjiuwen.sdk import Agent
 from openjiuwen.sdk.flows import parallel, pipeline, agent as flow_agent, phase
@@ -1528,7 +1552,7 @@ Crew(agents=[screener, ranker, recruiter],
 
 **Framework characteristics across these examples:**
 
-| Capability | JiuwenSwarm | LangChain | AutoGen | CrewAI |
+| Capability | openjiuwen SDK | LangChain | AutoGen | CrewAI |
 |---|---|---|---|---|
 | Agent creation verbosity | Low | Low–medium | Medium | High (role/goal/backstory) |
 | Parallel execution | `parallel()` DSL | `asyncio.gather` | `a_initiate_chat` + gather | Context-passing only (sequential) |

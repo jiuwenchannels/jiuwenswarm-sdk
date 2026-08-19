@@ -1,14 +1,34 @@
 # openjiuwen SDK vs openjiuwen (direct)
 
-The same 12 examples as `framework-comparison.md`, but instead of comparing
-JiuwenSwarm against LangChain/AutoGen/CrewAI, this shows **how much the SDK
-buys you**: for every task, the left column is the `openjiuwen.sdk` one-liner
-and the right column is the equivalent built directly on `openjiuwen`
-(agent-core) primitives — `ReActAgent`, `Runner`, `TeamAgentSpec`, the
-`swarmflow` workflow DSL, `retrieval`, `memory`, etc.
+## What you're looking at
 
-`openjiuwen.sdk` does not exist yet; it is the intended ergonomic facade. The
-"direct" column is real, runnable agent-core code today.
+This document answers one question: **what does the `openjiuwen.sdk` façade
+actually buy you over calling the underlying `openjiuwen` runtime directly?**
+
+`openjiuwen` (agent-core) is the engine that powers JiuwenSwarm — it exposes
+agents, tools, teams, workflows, memory, and retrieval, but as a set of raw
+primitives: `ReActAgent`, `Runner`, `TeamAgentSpec`, the `swarmflow` workflow
+DSL, and so on. These primitives are powerful, but they are not ergonomic. A
+simple "run an agent and get an answer" takes ten lines of model plumbing before
+you write a single word of your actual task.
+
+The SDK is a thin, opinionated façade over those primitives. It does not add new
+capabilities — it removes friction. Every example below is the *same task* shown
+two ways:
+
+- **Left column — `openjiuwen.sdk`:** the intent. A few lines that say what you
+  want, in the way a developer naturally thinks about it.
+- **Right column — `openjiuwen` (direct):** the cost of doing the same thing
+  without the SDK, using the real agent-core APIs that exist today.
+
+The gap between the two columns is the SDK's entire value proposition.
+
+## How to read this
+
+Every task in this document is drawn from a concrete developer need: single-agent
+Q&A, web search, code review, multi-agent pipelines, memory, custom tools, bug
+fixing, RAG, and multi-agent orchestration. Twelve tasks, each demonstrating
+where the SDK's abstraction is thin (and where it isn't).
 
 **Models throughout:** `gpt-4o` (OpenAI).
 
@@ -16,7 +36,7 @@ and the right column is the equivalent built directly on `openjiuwen`
 > string shorthand. You must construct a `Model` from a `ModelClientConfig`
 > (provider/key/base) + `ModelRequestConfig(model=...)`, then feed it into
 > `ReActAgentConfig` or `create_deep_agent`. This is the single biggest source
-> of boilerplate in every example below.
+> of boilerplate in every example below, and the SDK's most visible win.
 
 ---
 
