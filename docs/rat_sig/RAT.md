@@ -13,46 +13,124 @@
 
 ### WHY
 
-JiuwenSwarm is currently available only as finished applications: a browser
-extension, an IDE plugin, a JupyterLab extension, and a mobile app. Each of
-these is built on top of the same Python runtime and WebSocket protocol, but
-that runtime is not accessible to external developers. The result is a walled
-garden: a developer who wants to embed a JiuwenSwarm research agent in their
-own product, automate agent runs in a CI pipeline, or build a vertical SaaS on
-top of the platform has no supported path to do so.
+#### The problem: what people cannot do today
 
-An SDK changes this. It turns JiuwenSwarm from a consumer application into a
-platform that other products can build on. The addressable audience widens from
-individual power users to the entire community of developers and companies who
-want an AI agent with serious capabilities (code execution, browser context,
-long-term memory, multi-agent coordination) without building that infrastructure
-from scratch.
+JiuwenSwarm ships only as finished applications — a browser extension, an IDE
+plugin, a JupyterLab extension, and a mobile app. All of them are built on the
+same Python runtime and WebSocket protocol, but that runtime is deliberately
+invisible to the outside. For a developer this means three concrete dead ends:
 
-Three developer audiences are distinct enough to warrant separate API surfaces:
+- **They cannot embed the agent in their own product.** A SaaS company that
+  wants to add "a JiuwenSwarm agent" to their web app has no supported entry
+  point — the runtime is not importable, the protocol is undocumented, and there
+  is no stable API to call.
+- **They cannot automate agent runs.** A team that wants to run agents in a CI
+  pipeline, a nightly job, or a batch of experiments has no way to trigger a run
+  programmatically; today the only path is a human clicking in a finished UI.
+- **They cannot build on top of it.** A startup that wants to build a vertical
+  agent product on JiuwenSwarm's capabilities (code execution, browser context,
+  long-term memory, multi-agent coordination) has to either reverse-engineer a
+  private protocol — unsupported, brittle — or give up.
+
+Without an SDK these developers do not simply "have a worse time": they go
+elsewhere. Every one of these jobs today ends in one of two outcomes — (a) the
+team abandons JiuwenSwarm for a competitor with an SDK, or (b) they build on a
+fragile, undocumented protocol that breaks on the next release and generates
+support burden. Either way, JiuwenSwarm loses a paying developer without gaining
+anything.
+
+#### The value: what the SDK unlocks
+
+The SDK removes the wall. Each of the dead ends above becomes a short, supported
+code path:
+
+- **Embed:** `pip install openjiuwen-sdk` + a handful of lines gives a working
+  agent with code execution, browser context, and long-term memory — the
+  capabilities JiuwenSwarm already has, now callable from any product.
+- **Automate:** `agent.run(prompt)` in a script, notebook, or server turns agent
+  invocation into an ordinary function call — schedulable, testable, and
+  composable in CI or batch pipelines.
+- **Build on:** a stable, versioned, documented API makes JiuwenSwarm a platform
+  rather than a black box, so third parties can ship vertical products on it
+  without reverse-engineering anything.
+
+The critical "rather than not do" argument is the infrastructure: JiuwenSwarm
+already owns the hard parts — code execution sandboxing, browser context,
+long-term memory, multi-agent coordination. That is precisely the infrastructure
+every competitor would otherwise have to build from scratch. The SDK is the only
+supported way to *get* that infrastructure programmatically, which is why a
+developer who needs a serious agent chooses it over raw model APIs or
+re-implementing everything themselves.
+
+#### The stakes for JiuwenSwarm: why build it now
+
+Developer value alone is not the reason to build; it is the reason the product
+*can* win. The business case is what JiuwenSwarm gains and loses by the decision.
+
+**The return to JiuwenSwarm.** An SDK converts one-time consumers into an
+ecosystem. Every developer who builds on the SDK is locked into the runtime for
+the life of their product: they depend on JiuwenSwarm's capabilities, sessions,
+and semantics, so they stay, upgrade, and pay. Each embedded agent is
+distribution — a JiuwenSwarm-powered feature inside a third-party product that
+acquires and retains users for us without our sales effort. A platform with a
+growing developer base also compounds: more builders ship more agent products,
+which normalizes JiuwenSwarm as the default, which attracts more builders. The
+SDK is the difference between selling a finished app and owning a category.
+
+**Competitive position and timing.** The agent market is at the exact moment
+where SDKs are being chosen — OpenAI and Anthropic expose model APIs,
+LangChain/LangGraph, CrewAI, and AutoGen sell orchestration, and Claude Code
+ships an SDK. None of them bundle JiuwenSwarm's combination of sandboxed code
+execution, browser context, long-term memory, and multi-agent coordination
+behind a clean API. That is a window, and windows close: every month JiuwenSwarm
+stays a walled garden, developers who need these capabilities pick another
+vendor and, once integrated, rarely migrate. Shipping the SDK now captures the
+developers who are deciding today; shipping later means competing for
+developers who already chose elsewhere. The cost of waiting is the permanent
+loss of a cohort.
+
+**What winning looks like.** The SDK is successful when it measurably moves the
+platform, not when it merely exists. The concrete success criteria are: (a)
+adoption — developers install and run agents through the SDK outside the shipped
+apps, tracked as SDK-driven sessions distinct from UI sessions; (b) retention
+and lock-in — SDK-built products keep running JiuwenSwarm across releases
+without migration, tracked as recurring SDK usage; (c) ecosystem — third-party
+products ship on the SDK and are attributable to it; (d) revenue — SDK usage
+correlates with paid seats or platform consumption. If those move, the SDK paid
+for itself many times over; if none move, the SDK is just another package, and
+that failure is detectable early rather than assumed.
+
+#### The three audiences, and what each is trying to do
+
+Three developer audiences are distinct enough to warrant separate API surfaces.
+For each, the SDK answers a specific job-to-be-done, not just a preference:
 
 **Audience 1 — Python developers (data scientists, ML engineers, automation
-engineers):** Want to call a JiuwenSwarm agent from a Python script, notebook,
-or server. They are comfortable with pip packages. They want `async/await`,
-type hints, streaming callbacks, and the ability to plug in custom tools.
+engineers).** Their job is running agents inside their own compute: notebooks,
+batch experiments, evaluation harnesses, CI jobs. They need a pip package with
+`async/await`, type hints, streaming callbacks, and custom-tool plug-in — so an
+agent run is a function they can call, not a UI they have to click.
 
-**Audience 2 — Web and mobile developers (TypeScript/JavaScript):** Building
-applications on top of JiuwenSwarm — web dashboards, mobile apps, internal
-tools. They want an npm package that handles the WebSocket protocol, session
-management, streaming, and reconnection. They do not want to understand the
-binary protocol.
+**Audience 2 — Web and mobile developers (TypeScript/JavaScript).** Their job is
+putting an agent behind their own product surface: web dashboards, mobile apps,
+internal tools. They need an npm package that owns the WebSocket protocol,
+session management, streaming, and reconnection — so they ship agent features
+without learning the binary protocol.
 
-**Audience 3 — Polyglot developers / language-agnostic integrations:** Building
-in Go, Rust, Java, or any language that cannot import a Python package. They
-need a stable HTTP REST API and a WebSocket API that is documented well enough
-to write a client in any language.
+**Audience 3 — Polyglot developers / language-agnostic integrations.** Their job
+is driving JiuwenSwarm from a language that cannot import Python — Go, Rust,
+Java. They need a stable HTTP REST + WebSocket API, documented well enough to
+write a client in any language — so JiuwenSwarm is reachable from anywhere,
+not only from Python.
 
 ### WHEN
 
 The existing codebase (`openjiuwen/core`, `openjiuwen/harness`) already
 contains most of the logic needed for an SDK. The Python package (`openjiuwen`)
-is installable today. The gap is: (1) the public API boundary is not defined —
-`core/__init__.py` exports nothing; (2) there is no TypeScript client package;
-(3) there is no formally documented REST or WebSocket gateway.
+is installable today. The gap is: (1) the public API boundary is only partially
+defined — `core/__init__.py` exports nothing, while `harness/__init__.py`
+already exposes a lazy-loaded public API; (2) there is no TypeScript client
+package; (3) there is no formally documented REST or WebSocket gateway.
 
 SDK work can begin immediately alongside the mobile app. It does not require
 cloud hosting — developers can run a local server and call the SDK against it.
@@ -81,7 +159,7 @@ package) and can:
 | Capability | Existing class | SDK surface |
 |---|---|---|
 | Create and run an agent | `DeepAgent`, `Runner` | `Agent.create()`, `agent.run(prompt)`, `agent.stream(prompt)` |
-| Session management | `AgentSession`, `SessionManager` | `Session.create()`, `.list()`, `.get()` |
+| Session management | `Session` (deprecated), `create_agent_session`, `GlobalSessionController` | `Session.create()`, `.list()`, `.get()` |
 | Custom tools | `Tool`, `ToolCard` | `@sdk.tool` decorator |
 | Multi-agent team | `TeamAgent`, `TeamAgentSpec` | `Team.create()`, `.spawn()` |
 | Event hooks | `TaskLoopEventHandler` | `agent.on("token", cb)`, `.on("done", cb)` |
@@ -218,9 +296,11 @@ only the façade changes — not the developer's code.
 ### Impact on Existing Systems
 
 **`openjiuwen/core/__init__.py` and `openjiuwen/harness/__init__.py`:**
-Currently export very little. The SDK phase defines what is public. These
-`__init__.py` files become the authoritative export list. Internal modules are
-not re-exported.
+`core/__init__.py` still exports nothing. `harness/__init__.py` already exports a
+lazy-loaded public API (`DeepAgent`, `TaskLoopEventHandler`, `TaskLoopEventExecutor`,
+`DeepAgentConfig`, `AudioModelConfig`, `VisionModelConfig`, `MultiRolloutConfig`,
+`MultiRolloutExecutor`, `create_deep_agent`, `Workspace`). The SDK phase consolidates
+these into the authoritative public export list. Internal modules are not re-exported.
 
 **WebSocket gateway (`jiuwenswarm-browser`, mobile, IDE, JupyterLab):**
 The existing protocol continues to work unchanged. The gateway adds a version
